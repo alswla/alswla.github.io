@@ -7,6 +7,8 @@ const config: GatsbyConfig = {
   siteMetadata: {
     title: `alswla_blog`,
     siteUrl: `https://www.yourdomain.tld`,
+    author: `@alswla`,
+    description: `alswla's tech blog, where I write about web development(Frontend), and other tech-related topics.`,
   },
   graphqlTypegen: true,
   jsxRuntime: "automatic",
