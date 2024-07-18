@@ -3,7 +3,7 @@ import {
   renderRichText,
 } from "gatsby-source-contentful/rich-text"
 import { NodeRenderer, Options } from "@contentful/rich-text-react-renderer"
-import { BLOCKS, INLINES, MARKS } from "@contentful/rich-text-types"
+import { BLOCKS, INLINES, MARKS, Text } from "@contentful/rich-text-types"
 import {
   Heading,
   OrderList,
@@ -27,6 +27,7 @@ const options: Options = {
   renderMark: {
     [MARKS.CODE]: text => {
       const isBlock = !!text && CODE_META_REGEX.test(text.toString())
+
       if (!isBlock) {
         return <Code>{text}</Code>
       } else {
@@ -44,7 +45,12 @@ const options: Options = {
   renderNode: {
     ...HEADERS.reduce<{ [block: string]: NodeRenderer }>((nodes, header) => {
       nodes[header] = (node, children) => (
-        <Heading type={header}>{children}</Heading>
+        <Heading
+          type={header}
+          id={`${(node.content[0] as Text).value.replaceAll(" ", "-")}_`}
+        >
+          {children}
+        </Heading>
       )
 
       return nodes
