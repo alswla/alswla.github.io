@@ -1,79 +1,100 @@
 import styled from "styled-components"
 import { Link } from "gatsby"
-import { GatsbyImage } from "gatsby-plugin-image"
 
 export const Wrapper = styled(Link)`
   display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  width: 320px;
-  border-radius: 10px;
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-  text-decoration: none;
+  align-items: flex-start;
+  gap: 28px;
+  padding: 28px 0;
   color: inherit;
+  border-bottom: 1px solid #ececec;
 
-  @media (max-width: 1024px) {
-    width: calc(50% - 10px);
+  &:first-child {
+    padding-top: 0;
   }
+
+  & h3 {
+    transition: color 0.15s ease;
+  }
+
+  &:hover h3 {
+    color: #2a7ae2;
+  }
+
+  @media (max-width: 640px) {
+    gap: 16px;
+  }
+`
+
+export const TextSide = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+`
+
+export const Meta = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #8a8a8a;
+`
+
+export const Title = styled.h3`
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #1f1f1f;
+  word-break: keep-all;
 
   @media (max-width: 768px) {
-    width: 100%;
+    font-size: 18px;
   }
 `
 
-export const Thumbnail = styled.div`
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  height: 200px;
-`
-
-export const Contents = styled.div`
-  padding: 15px;
-`
-
-export const Title = styled.div`
+export const Description = styled.p`
   display: -webkit-box;
   overflow: hidden;
-  max-height: 2.4em;
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: #5a5a5a;
   text-overflow: ellipsis;
-  word-wrap: break-word;
+  word-break: keep-all;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  line-height: 1.2em;
 
   @media (max-width: 768px) {
-    font-size: 15px;
+    font-size: 14px;
   }
 `
 
-export const Date = styled.div`
-  margin-top: 10px;
-  font-size: 12px;
-  font-weight: 200;
-`
-
-export const Category = styled.div`
+export const Categories = styled.div`
   display: flex;
   flex-wrap: wrap;
-  gap: 0 5px;
-  margin-top: 10px;
+  gap: 6px 10px;
+  margin-top: 4px;
   font-size: 12px;
+  color: #8a8a8a;
+
+  & > span::before {
+    content: "#";
+    margin-right: 2px;
+  }
 `
 
-export const Description = styled.div`
-  display: -webkit-box;
+export const ImageSide = styled.div`
+  flex-shrink: 0;
   overflow: hidden;
-  width: 100%;
-  max-height: 3.6em;
-  margin-top: 15px;
-  font-size: 12px;
-  font-weight: 300;
-  text-overflow: ellipsis;
-  word-wrap: break-word;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  line-height: 1.2em;
+  width: 160px;
+  aspect-ratio: 16 / 10;
+  border-radius: 6px;
+  background-color: #f4f4f4;
+
+  @media (max-width: 640px) {
+    width: 96px;
+    aspect-ratio: 1 / 1;
+  }
 `

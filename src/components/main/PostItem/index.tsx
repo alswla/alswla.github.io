@@ -5,37 +5,46 @@ type PostItemProps = {
   title: string
   date: string
   category: string[]
-  thumbnail: IGatsbyImageData
   description: string
   slug: string
+  thumbnail?: IGatsbyImageData | null
 }
 
 export default function PostItem({
   title,
   date,
   category,
-  thumbnail,
   description,
   slug,
+  thumbnail,
 }: PostItemProps) {
   return (
-    <P.Wrapper to={slug as string}>
-      <P.Thumbnail>
-        <GatsbyImage
-          image={thumbnail}
-          alt={title}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </P.Thumbnail>
-
-      <P.Contents>
+    <P.Wrapper to={slug}>
+      <P.TextSide>
+        <P.Meta>
+          <span>{date}</span>
+        </P.Meta>
         <P.Title>{title}</P.Title>
-        <P.Date>{date}</P.Date>
-        <P.Category>
-          {category?.map(category => <div key={category}>#{category}</div>)}
-        </P.Category>
         <P.Description>{description}</P.Description>
-      </P.Contents>
+        {category?.length > 0 && (
+          <P.Categories>
+            {category.map(c => (
+              <span key={c}>{c}</span>
+            ))}
+          </P.Categories>
+        )}
+      </P.TextSide>
+
+      {thumbnail && (
+        <P.ImageSide>
+          <GatsbyImage
+            image={thumbnail}
+            alt={title}
+            style={{ width: "100%", height: "100%" }}
+            imgStyle={{ objectFit: "cover" }}
+          />
+        </P.ImageSide>
+      )}
     </P.Wrapper>
   )
 }

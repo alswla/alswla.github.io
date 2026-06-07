@@ -7,34 +7,54 @@ export const Wrapper = styled.div`
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 20px;
-  aspect-ratio: 16 / 9;
-  padding: 50px;
-  border-radius: 20px;
+  gap: 14px;
+  width: calc(100% - 250px);
+  aspect-ratio: 16 / 6;
+  max-height: 260px;
+  padding: 28px 32px;
+  border-radius: 12px;
+
+  @media (max-width: 768px) {
+    width: 100%;
+    aspect-ratio: 16 / 7;
+    max-height: 200px;
+    padding: 20px 22px;
+    gap: 10px;
+  }
 `
 
 export const Title = styled.div`
   display: -webkit-box;
   max-height: 2.4em;
   overflow: hidden;
-  font-size: 30px;
+  font-size: 24px;
   font-weight: 700;
   color: #ffffff;
   text-overflow: ellipsis;
   word-wrap: break-word;
+  word-break: keep-all;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  line-height: 1.2em;
+  line-height: 1.3em;
+
+  @media (max-width: 768px) {
+    font-size: 18px;
+  }
 `
 
 export const Information = styled.div`
   display: flex;
   justify-content: space-between;
-  padding-bottom: 15px;
-  border-bottom: 1px solid #ffffff;
-  font-size: 15px;
-  font-weight: 300;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  font-weight: 400;
   color: #ffffff;
+
+  @media (max-width: 768px) {
+    font-size: 12px;
+    padding-bottom: 8px;
+  }
 `
 
 export const Category = styled.div`
@@ -59,8 +79,8 @@ export const Thumbnail = styled(GatsbyImage)`
     height: 100%;
     background: linear-gradient(
       180deg,
-      rgba(0, 0, 0, 0.05) 0%,
-      rgba(0, 0, 0, 0.9) 130%
+      rgba(0, 0, 0, 0.1) 0%,
+      rgba(0, 0, 0, 0.85) 130%
     );
   }
 `

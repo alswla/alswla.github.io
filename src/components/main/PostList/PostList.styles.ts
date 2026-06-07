@@ -1,12 +1,14 @@
 import styled from "styled-components"
-import { MasonryInfiniteGrid } from "@egjs/react-infinitegrid"
 
-export const Wrapper = styled(MasonryInfiniteGrid)`
-  margin-top: 40px;
-`
-/* export const Wrapper = styled.div`
+export const Wrapper = styled.div`
   display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  margin-top: 40px;
-` */
+  flex-direction: column;
+  width: 100%;
+`
+
+export const Empty = styled.div`
+  padding: 80px 0;
+  text-align: center;
+  font-size: 15px;
+  color: #8a8a8a;
+`

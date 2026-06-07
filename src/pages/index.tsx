@@ -1,31 +1,44 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { PageProps, graphql } from "gatsby"
+import styled from "styled-components"
 
-import Introduction from "../components/main/Introduction"
-import Category from "../components/main/Category"
 import PostList from "../components/main/PostList"
+import Sidebar from "../components/main/Sidebar"
+
+const Grid = styled.div`
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: 64px;
+  align-items: start;
+
+  @media (max-width: 1024px) {
+    grid-template-columns: 1fr;
+    gap: 40px;
+  }
+`
 
 export default function Index({
   data: {
     allContentfulPost: { nodes },
   },
+  location,
 }: PageProps<Queries.IndexPageQuery>) {
   const [selectedCategory, setSelectedCategory] = useState<string>("All")
-  const categories = nodes.reduce<Record<string, number>>(
-    (categories, post) => {
-      post.category
-        ?.filter((category): category is string => !!category)
-        .forEach(
-          category => (categories[category] = (categories[category] ?? 0) + 1),
-        )
 
-      return categories
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    setSelectedCategory(params.get("category") ?? "All")
+  }, [location.search])
+
+  const categories = nodes.reduce<Record<string, number>>(
+    (acc, post) => {
+      post.category
+        ?.filter((c): c is string => !!c)
+        .forEach(c => (acc[c] = (acc[c] ?? 0) + 1))
+      return acc
     },
     { All: nodes.length },
   )
-
-  const handleSelectedCategory = (category: string) =>
-    setSelectedCategory(category)
 
   const posts = nodes.filter(
     ({ category }) =>
@@ -33,15 +46,10 @@ export default function Index({
   )
 
   return (
-    <>
-      <Introduction />
-      <Category
-        categories={categories}
-        selectedCategory={selectedCategory}
-        handleSelect={handleSelectedCategory}
-      />
+    <Grid>
       <PostList posts={posts} />
-    </>
+      <Sidebar categories={categories} selectedCategory={selectedCategory} />
+    </Grid>
   )
 }
 
@@ -54,7 +62,7 @@ export const query = graphql`
         slug
         date
         thumbnail {
-          gatsbyImageData(width: 500)
+          gatsbyImageData(width: 300)
         }
         description {
           description

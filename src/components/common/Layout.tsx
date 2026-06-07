@@ -8,7 +8,16 @@ const GlobalStyle = createGlobalStyle`
     margin: 0;
     padding: 0;
     box-sizing: border-box;
-    font-family: "Pretendard";
+    font-family:
+      "Pretendard",
+      -apple-system,
+      BlinkMacSystemFont,
+      "Helvetica Neue",
+      "Apple SD Gothic Neo",
+      Arial,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   html,
@@ -16,32 +25,34 @@ const GlobalStyle = createGlobalStyle`
   #__gatsby,
   #gatsby-focus-wrapper {
     min-height: 100%;
-    height: 100vh;
+  }
+
+  body {
+    background-color: #ffffff;
+    color: #1f1f1f;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
   }
 `
 
 const Wrapper = styled.div`
   display: flex;
   flex-direction: column;
-  width: 1000px;
-  min-height: 100%;
-  margin: 0 auto;
-
-  @media (max-width: 1024px) {
-    width: 100%;
-    padding: 0 40px;
-  }
-
-  @media (max-width: 768px) {
-    padding: 0 20px;
-  }
+  min-height: 100vh;
 `
 
-const Contents = styled.div`
-  margin: 80px 0;
+const Contents = styled.main`
+  flex: 1;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
 
-  @media (max-width: 1024px) {
-    margin: 50px 0;
+  @media (max-width: 768px) {
+    padding: 32px 16px 60px;
   }
 `
 

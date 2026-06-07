@@ -1,4 +1,3 @@
-import { useState, useEffect } from "react"
 import { IGatsbyImageData } from "gatsby-plugin-image"
 
 import PostItem from "../PostItem"
@@ -8,54 +7,24 @@ type PostListProps = {
   posts: Queries.IndexPageQuery["allContentfulPost"]["nodes"]
 }
 
-function initPosts(posts: PostListProps["posts"]) {
-  return posts.slice(0, 10).map(post => ({ post, groupKey: 0 }))
-}
-
 export default function PostList({ posts }: PostListProps) {
-  const [items, setItems] = useState(initPosts(posts))
-
-  const handleLoadPosts = (nextGroupKey: number) => {
-    const nextPosts = posts
-      .slice(nextGroupKey * 10, (nextGroupKey + 1) * 10)
-      .map(post => ({ post, groupKey: nextGroupKey }))
-
-    setItems(prevItems => [...prevItems, ...nextPosts])
+  if (posts.length === 0) {
+    return <L.Empty>해당 카테고리에 글이 아직 없습니다.</L.Empty>
   }
 
-  useEffect(() => setItems(initPosts(posts)), [posts])
-
   return (
-    <L.Wrapper
-      gap={20}
-      onRequestAppend={({ groupKey }: { groupKey: number }) => {
-        const nextGroupKey = parseInt(groupKey?.toString() ?? "0") + 1
-
-        if (posts.length <= nextGroupKey * 10) {
-          return
-        }
-
-        handleLoadPosts(nextGroupKey)
-      }}
-    >
-      {items.map(
-        ({
-          post: { title, category, slug, date, thumbnail, description },
-          groupKey,
-        }) => (
-          <PostItem
-            title={title as string}
-            date={date as string}
-            category={category as string[]}
-            thumbnail={thumbnail?.gatsbyImageData as IGatsbyImageData}
-            description={description?.description as string}
-            slug={slug as string}
-            key={slug}
-            data-grid-groupkey={groupKey}
-          />
-        ),
-      )}
-      {items.length < 3 ? <div /> : null}
+    <L.Wrapper>
+      {posts.map(({ title, category, slug, date, thumbnail, description }) => (
+        <PostItem
+          key={slug}
+          title={title as string}
+          date={date as string}
+          category={(category ?? []) as string[]}
+          description={description?.description as string}
+          slug={slug as string}
+          thumbnail={thumbnail?.gatsbyImageData as IGatsbyImageData | null}
+        />
+      ))}
     </L.Wrapper>
   )
 }
