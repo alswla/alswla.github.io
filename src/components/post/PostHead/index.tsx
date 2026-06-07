@@ -5,7 +5,7 @@ type PostHeadProps = {
   title: string
   category: string[]
   date: string
-  thumbnail: IGatsbyImageData
+  thumbnail?: IGatsbyImageData | null
 }
 
 export default function PostHead({
@@ -14,6 +14,20 @@ export default function PostHead({
   date,
   thumbnail,
 }: PostHeadProps) {
+  if (!thumbnail) {
+    return (
+      <H.PlainHeader>
+        <H.PlainTitle>{title}</H.PlainTitle>
+        <H.PlainMeta>
+          {category.map(item => (
+            <span key={item}>#{item}</span>
+          ))}
+          <H.PlainDate>{date}</H.PlainDate>
+        </H.PlainMeta>
+      </H.PlainHeader>
+    )
+  }
+
   return (
     <H.Wrapper>
       <H.Title>{title}</H.Title>

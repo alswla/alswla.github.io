@@ -62,6 +62,52 @@ export const Category = styled.div`
   gap: 7px;
 `
 
+export const PlainHeader = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: calc(100% - 250px);
+  padding: 8px 0 4px;
+  border-bottom: 1px solid #ececec;
+
+  @media (max-width: 900px) {
+    width: 100%;
+    gap: 12px;
+  }
+`
+
+export const PlainTitle = styled.h1`
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #1f1f1f;
+  word-break: keep-all;
+
+  @media (max-width: 900px) {
+    font-size: 24px;
+  }
+`
+
+export const PlainMeta = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding-bottom: 18px;
+  font-size: 13px;
+  color: #8a8a8a;
+
+  @media (max-width: 900px) {
+    font-size: 12px;
+    padding-bottom: 14px;
+  }
+`
+
+export const PlainDate = styled.span`
+  margin-left: auto;
+`
+
 export const Thumbnail = styled(GatsbyImage)`
   position: absolute;
   top: 0;
