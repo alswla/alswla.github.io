@@ -3,6 +3,8 @@ import Prism from "prismjs"
 
 import * as B from "./PostBody.styles"
 import "prismjs/components/prism-typescript"
+import "prismjs/components/prism-jsx"
+import "prismjs/components/prism-tsx"
 
 import Comment from "../Comment"
 import TableOfContents from "../TableOfContents"
