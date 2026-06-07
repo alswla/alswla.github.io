@@ -4,6 +4,10 @@ export const Wrapper = styled.div`
   position: sticky;
   top: 100px;
   width: 100%;
+
+  @media (max-width: 900px) {
+    display: none;
+  }
 `
 
 export const Title = styled.div`

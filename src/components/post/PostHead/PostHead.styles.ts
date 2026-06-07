@@ -14,7 +14,7 @@ export const Wrapper = styled.div`
   padding: 28px 32px;
   border-radius: 12px;
 
-  @media (max-width: 768px) {
+  @media (max-width: 900px) {
     width: 100%;
     aspect-ratio: 16 / 7;
     max-height: 200px;
@@ -37,7 +37,7 @@ export const Title = styled.div`
   -webkit-box-orient: vertical;
   line-height: 1.3em;
 
-  @media (max-width: 768px) {
+  @media (max-width: 900px) {
     font-size: 18px;
   }
 `
@@ -51,7 +51,7 @@ export const Information = styled.div`
   font-weight: 400;
   color: #ffffff;
 
-  @media (max-width: 768px) {
+  @media (max-width: 900px) {
     font-size: 12px;
     padding-bottom: 8px;
   }

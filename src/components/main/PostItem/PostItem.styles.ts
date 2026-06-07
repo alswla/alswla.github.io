@@ -94,7 +94,6 @@ export const ImageSide = styled.div`
   background-color: #f4f4f4;
 
   @media (max-width: 640px) {
-    width: 96px;
-    aspect-ratio: 1 / 1;
+    display: none;
   }
 `
