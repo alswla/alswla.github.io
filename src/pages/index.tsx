@@ -63,7 +63,7 @@ export const query = graphql`
           title
           category
           slug
-          date
+          date(formatString: "YYYY-MM-DD")
           description
           thumbnail {
             childImageSharp {

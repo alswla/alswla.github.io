@@ -29,7 +29,7 @@ export const query = graphql`
       frontmatter {
         title
         slug
-        date
+        date(formatString: "YYYY-MM-DD")
         category
         description
         thumbnail {
