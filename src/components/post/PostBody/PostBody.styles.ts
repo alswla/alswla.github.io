@@ -20,13 +20,13 @@ export const Content = styled.div`
   flex-direction: column;
   gap: 100px;
   font-size: 16px;
-  line-height: 2;
+  line-height: 1.75;
   word-break: break-word;
 
   @media (max-width: 640px) {
     gap: 56px;
     font-size: 15px;
-    line-height: 1.8;
+    line-height: 1.65;
   }
 
   #content {
