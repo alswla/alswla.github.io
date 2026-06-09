@@ -1,0 +1,160 @@
+---
+title: V8에서의 가비지 컬렉션
+slug: v8-garbage-collection
+date: 2024-02-12
+category:
+  - JavaScript
+  - V8
+  - 메모리
+  - GC
+description: V8 엔진의 메모리 구조(New/Old space)와 마이너 GC(Scavenger), 메이저 GC(Mark-Sweep-Compact + Tri-color 알고리즘)가 어떻게 동작하는지, 그리고 Stop-The-World를 줄이기 위해 등장한 Orinoco 프로젝트(Parallel/Incremental/Concurrent/Idle-time GC)까지 정리했습니다.
+---
+
+Content: JavaScript
+
+## 🗂️ 목차
+
+## v8엔진의 메모리 구조
+
+---
+
+v8엔진의 가비지컬렉션을 살펴보기 전, v8엔진의 메모리 구조에 대해 알아보겠습니다.
+
+프로그램을 실행하면 메모리의 Resident Set이라는 빈 공간이 할당됩니다. 이 Resident Set은 스택과 힙 영역으로 구성됩니다.
+
+자바스크립트의 경우 싱글스레드이기 때문에 스택(Stack) 메모리를 하나만 가집니다. 하지만 GC에서 중요하게 봐야할 것은 바로 힙(Heap) 메모리입니다. 왜냐하면, 스택의 경우 함수 호출이 끝난 후 OS에 의해 자동으로 정리되지만, 힙 메모리는 그렇지 않기 때문입니다.
+
+따라서 힙에 있는 쓸모없는 메모리가 해제되지 않을 경우 메모리 누수가 발생하여 프로그램 속도는 점점 느려집니다.
+
+![Untitled](./untitled.png)
+
+## v8엔진과 가비지 컬렉션(GC) [\*\*\*\*](https://v8.dev/blog/trash-talk)
+
+---
+
+v8엔진은 힙 영역을 generations라고 불리는 New, Old space로 나눴습니다. 이때 New space는 2개의 semi space로 또 나뉩니다.
+
+![Untitled](./untitled-1.png)
+
+객체는 제일 처음 New space의 첫번째 semi space에 할당됩니다. 만약 GC로부터 한 번 생존시 다른 semi space로 이동합니다. 그리고 생존한 객체들이 또 한 번 GC로부터 생존하면 Old space로 이동합니다.
+
+![Untitled](./untitled-2.png)
+
+가비지 컬렉션은 New space에서의 마이너 GC와 Old space에서의 메이저 GC로 각각 다른 방식으로 동작합니다.
+
+이때 Heap영역은 처음 설계될 때 **Weak Generational Hypothesis**라는 가설에 기반하여 설계되었습니다. 이는 **대부분의 경우 새로운 객체가 오래된 객체보다 쓸모없어질 가능성이 높다는 것**입니다. 오래된 객체가 쓸모없어질 가능성이 낮은데 GC가 모든 객체를 매번 검사하는 것은 비효율적입니다.
+
+따라서 객체의 특성에 맞춰 힙 영역을 크게 New space, Old space로 분류하여 새로운 객체는 New space에서, 오래된 객체는 Old space에서 각 영역에 최적화된 GC들로 관리합니다.
+
+마이너 GC는 객체들의 생명주기가 짧은 New space에서 빠르게 가비지 컬렉션을 하고, 메이저 GC는 메모리 사이즈가 큰 Old space에서 가비지 컬렉션을 합니다.
+
+### 마이너 GC(Scavenger)
+
+먼저 마이너 GC에 대해 자세히 살펴보겠습니다. New space의 garbage를 수집해주는 마이너 GC입니다. New space에 있는 대부분의 객체들은 수집되기를 즉, 메모리에서 해제되기를 원합니다.
+
+마이너 GC에서 살아남은 객체들은 항상 새로운 곳으로 eavacuation(대피)합니다. 즉 New space의 2개의 semi space에서 비어있는 semi space로 이동합니다. 이러한 이동 과정을 위해 New space의 2개의 semi space 중 하나는 항상 비어있습니다. 이 비어있는 영역은 To space, 객체들이 머무르는 영역은 From space 즉, 원래 객체들이 살아남으면 기존 semi space에서(From) 비어있는 semi space로(To) 이동한다는 의미입니다.
+
+이러한 과정은 메모리 단편화를 주기적으로 방지하며, 객체는 새로운 메모리 주소값으로 포인터가 갱신됩니다.
+
+![Untitled](./untitled-3.png)
+
+![Untitled](./untitled-4.png)
+
+From space에서 To space로 살아남은 객체들의 대피가 완료되면, From space에 남아있는 더 이상 사용되지 않는 객체들은 가비지 컬렉팅 되어 사라집니다. 그렇게 비워진 From space는 다시 To space로서의 역할을 맡게되고, To space는 From space의 역할을 맡게 됩니다.
+
+**그렇다면 New space에서 Old space로의 이동은 어떻게 이루어질까요?** 🤔
+
+새로운 객체가 할당된다고 가정하면, 먼저 New space의 From space의 semi space의 **빈 주소에 할당**됩니다. 그리고 새로운 객체는 생존하여 To space, 빈 semi space로 대피합니다. 하지만 기존에 한번 생존한 객체는 또 한 번 생존시 To space가 아닌 Old space로 이동됩니다.
+
+- **_메모리가 아닌 빈 주소에 할당_**
+
+  각 프로세스에는 고유한 개별 가상 주소 공간이 있습니다. 동일 컴퓨터의 모든 프로세스는 동일한 실제 메모리와 페이지 파일(있는 경우)을 공유합니다.
+
+  애플리케이션 개발자는 가상 주소 공간만 사용하고 실제 메모리는 직접적으로 조작하지 않습니다. 가비지 컬렉션기는 관리되는 힙에서 사용자 대신 가상 메모리를 할당 및 해제합니다.
+
+![Untitled](./untitled-5.png)
+
+### 메이저 GC
+
+Old space에 있는 객체들은 메이저 GC에 의해 가비지 컬렉팅됩니다. 메이저 GC에서는 Mark-Sweep-Compact 알고리즘과 Tri-color 알고리즘을 사용합니다.
+
+기본적은 로직은 Root로부터 그래프 순회하여 참조되지 않는 객체를 쓸모없는 객체로 간주하여 처리하는 것으로,구체적으로 아래의 3단계에 걸쳐 진행됩니다.
+
+**1. Marking(마킹)**
+
+어떤 객체들이 가비지 컬렉션 대상인지 알아내기 위한 단계로, Roots라는 실행 스택과 전역 객체를 담고 있는 객체의 set부터 시작하여 객체들을 DFS로 순회하며 Tri-color(white, gray, black)로 마킹합니다.
+
+- **white** : GC가 아직 탐색하지 못한 상태
+- **gray** : 탐색은 해으나 해당 객체가 참조하고 있는 객체가 있는지 확인을 안한 상태
+- **black** : 해당 객체가 참조하고 있는 객체까지 확인을 한 상태
+
+그렇다면 마킹 프로세스에 대해 좀 더 살펴보겠습니다.
+
+1. 모든 객체들은 처음에 흰색으로 마킹되어 있습니다.
+2. 제일 처음, **root 객체를 회색으로 마킹 후 덱([deque](https://optimuslee.tistory.com/31): stack + queue)에 push_front** 합니다.
+
+![Untitled](./untitled-6.png)
+
+1.  덱에서 pop_front 하여 객체를 하나 꺼내고
+2.  **꺼낸 객체는 검은색으로 마킹**합니다.
+3.  **꺼낸 객체가 참조하는 객체들(인접 객체)을 회색으로 마킹 후 덱에 다시 push_front** 합니다.
+    인접 객체들이 마킹되는 과정은 아래와 같습니다. 1. 흰색에서 회색으로 변경될 경우만 덱에 push_front 합니다. 2. 여러 객체가 참조하는 객체인 경우 이미 회색이거나 검은색일 수 있습니다. 3. 회색/검은색일 경우 탐색 과정에서 이미 방문한 객체이므로 덱에 push_front 하지 않습니다.
+
+        ![Untitled](./untitled-7.png)
+
+4.  3~5번 과정을 반복하며 덱이 빌 때까지 반복합니다.
+5.  최종적으로 모든 객체들이 흰색 혹은 검은색이 됩니다.
+
+![Untitled](./untitled-8.png)
+
+최종적으로 모든 객체가 흰색 혹은 검은색으로 변경되면 스위핑(Sweeping)과 압축(Compact)이 일어납니다.
+
+**Sweeping(스위핑)**
+
+덱이 비었을 때 최종적으로 흰색으로 마킹된 객체들의 메모리 주소를 free-list라고 부르는 자료구조에 추가합니다. 따라서 이 주소들의 메모리 공간은 사용이 가능하기 때문에 새로운 객체를 저장할 수 있습니다.
+
+**Compaction(압축)**
+
+메모리 단편화가 심한 페이지들을 재배치하여 추가적인 메모리를 확보합니다.
+
+## Orinoco
+
+---
+
+가비지 컬렉션은 메모리를 자동으로 관리하여 한정적인 메모리를 효율적으로 쓰도록 도와주지만, 가비지 컬렉션에도 단점이 존재합니다.
+
+전통적인 마이너 GC와 메이저 GC의 가비지 컬렉션이 수행할 때 프로그램이 멈추기 때문에 오버헤드가 발생되는 문제점이 있습니다. 이를 **Stop-The-World(STW)**라고 합니다.
+
+**STW(Stop The World)**
+
+GC를 수행하기 위해 프로그램이 멈추는 현상을 말하며 GC가 작동하는 동안 GC 관련 스레드를 제외한 모든 스레드는 멈추게 되어 서비스 이용에 차질이 생길 수 있다.
+
+![Untitled](./untitled-9.png)
+
+STW 시간이 길어질수록 페이지가 느려지거나 렌더링이 지연되어 UX가 저하됩니다. 이에 GC는 Orinoco 프로젝트를 통해 발전해 왔습니다.
+
+### Parallel
+
+기존에는 메인 스레드 혼자 수행하던 일을 헬퍼 스레드들과 균등하게 나누어 처리합니다. 스레드간의 동기화를 처리해야하므로 오버헤드는 발생하지만 Stop-The-World 시간은 크게 감소합니다.
+
+![Untitled](./untitled-10.png)
+
+### Incremenal
+
+메인 스레드가 적은 양의 작업을 간헐적으로 처리합니다. 메인 스레드에서 가비지 컬렉션에 소요하는 시간이 분산되므로 UX를 향상시킬 수 있습니다.
+
+![Untitled](./untitled-11.png)
+
+### Concurrent
+
+메인 스레드는 가비지 컬렉션을 하지 않고, 헬퍼 스레드들이 이를 수행합니다. 기술적으로 구현하기는 어렵지만, 메인 스레드에서 Stop The World 시간이 전혀 없다는 큰 장점을 가집니다.
+
+![Untitled](./untitled-12.png)
+
+### Idle-time GC
+
+GC는 Implementation-defined(구현 정의)이므로 실행환경에 따라 자동으로 처리되어 개발자는 GC에 직접 접근할 수 없습니다. 하지만 v8엔진은 크롬과 같은 embedder(v8엔진을 내장하고 있는 브라우저 혹은 노드같은 플랫폼)에게 가비지 컬렉션을 유발할 수 있는 매커니즘을 제공합니다.
+
+크롬은 프로그램이 쉬는 free 혹은 idle time을 알 수 있습니다. 예를 들면 1초에 60프레임을 제공하는 크롬은 1프레임을 렌더링하기 위해 약 16ms(1s/60)가 소모됩니다. 만약 애니메이션 프레임 렌더링 작업이 16ms보다 빨리 끝나면, 크롬은 다음 프레임 작업 전까지 가비지 컬렉션을 유발합니다.
+
+![Untitled](./untitled-13.png)
