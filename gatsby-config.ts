@@ -1,5 +1,6 @@
 import type { GatsbyConfig } from "gatsby"
 import dotenv from "dotenv"
+import remarkGfm from "remark-gfm"
 
 dotenv.config()
 
@@ -27,6 +28,9 @@ const config: GatsbyConfig = {
     {
       resolve: "gatsby-plugin-mdx",
       options: {
+        mdxOptions: {
+          remarkPlugins: [remarkGfm],
+        },
         gatsbyRemarkPlugins: [
           "gatsby-remark-autolink-headers",
           {
