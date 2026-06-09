@@ -238,7 +238,9 @@ mouseMove$ = fromEvent<MouseEvent>(document, "mousemove")
 
 `isMouseCaptured`는 “지금 키보드 모드인가 마우스 모드인가”를 구분하는 상태입니다. 키보드 ↓/↑로 인덱스를 옮기면 `setIsMouseCaptured(true)`로 켜두고, 사용자가 마우스를 움직이는 순간 다시 마우스 모드로 전환합니다. 키보드로 인덱스가 바뀌었는데 마우스 위치의 hover 효과가 살아있으면 어색해 보이기 때문입니다.
 
-#### 스크롤 무한 페이징```tsx
+#### 스크롤 무한 페이징
+
+```tsx
 scroll$ = fromEvent(commandBoxListRef.current, "scroll")
   .pipe(
     filter(() => eventOn),
@@ -359,7 +361,9 @@ function scrollToBottomSmooth(container: HTMLElement, repeat: number = 4) {
 
 에디터에 표시할 때는 이걸 HTML로 풀어야 하고, 저장할 때는 다시 plain text + `##key##`로 되돌려야 합니다. 이 변환을 `tagParser`로 모았습니다.
 
-#### toHTML — 직렬화된 본문을 DOM으로```tsx
+#### toHTML — 직렬화된 본문을 DOM으로
+
+```tsx
 toHTML(body, templateParameters, interviewName, interviewId): string {
   if (!body) return '';
 
@@ -400,7 +404,9 @@ toHTML(body, templateParameters, interviewName, interviewId): string {
 
 `interviewLinkUser`는 환자별 문진 링크라 단순 치환이 아니라 `interviewId`를 함께 보존해야 합니다. `data-interview-id` attribute에 담아두면 toBodyString으로 역변환할 때도, 발송 시점에 실제 링크를 만들 때도 같은 attribute를 참조할 수 있습니다.
 
-#### toBodyString — DOM을 직렬화```tsx
+#### toBodyString — DOM을 직렬화
+
+```tsx
 toBodyString(html: string): string {
   const div = document.createElement('div');
   div.innerHTML = html;
@@ -515,7 +521,9 @@ if (e.key === "Backspace") {
 
 contentEditable에서 caret을 다루는 일은 단순히 “Selection을 잡고 setStart/setEnd”로 끝나지 않습니다. 브라우저마다 caret이 떨어지는 노드가 다르고, “보이지 않지만 있어야 하는” 텍스트 노드도 필요합니다. caret 관련 로직을 `caretUtils`로 분리해서 한 모듈에서 관리했습니다.
 
-#### 가장 기본: save / restore```tsx
+#### 가장 기본: save / restore
+
+```tsx
 save(savedRangeRef: RefObject<Range | null>): void {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return;
@@ -534,7 +542,9 @@ restore(savedRangeRef: RefObject<Range | null>): void {
 
 박스가 열릴 때 caret을 저장하고, 박스가 닫히면서 템플릿을 삽입할 때 복원합니다. `cloneRange()`를 호출하는 이유는 `Selection.getRangeAt`이 살아있는 객체를 반환하기 때문에, 다음 selection 변경이 그 객체에 반영되어 저장 의미가 사라지기 때문입니다.
 
-#### ZW Trick: moveAfter에서 caret anchor 보장```tsx
+#### ZW Trick: moveAfter에서 caret anchor 보장
+
+```tsx
 moveAfter(element: HTMLElement): void {
   const sel = window.getSelection();
   if (!sel) return;
@@ -572,7 +582,9 @@ ZW는 toBodyString에서 직렬화할 때 제거되므로 사용자가 저장한
 
 즉 caret이 머무는 자연 위치는 항상 “글자/태그의 뒤”라는 인터랙션 가정 위에서 설계되어 있고, “앞” 쪽 anchor는 줄 구조·새 줄 생성 시 textNode·기존 텍스트 흐름이 이미 제공하고 있어 별도 ZW가 필요 없었습니다.
 
-#### Arrow 키로 태그 단위 점프```tsx
+#### Arrow 키로 태그 단위 점프
+
+```tsx
 if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
   const tagEl = caretUtils.getTagAtCaret(node)
   if (tagEl) {
@@ -611,7 +623,9 @@ if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
 
 caret이 태그 _옆에_ 있을 때는 한 번의 화살표 키로 태그 전체를 건너뛰게 합니다. brower default 동작은 “한 글자씩”이라 태그 안 라벨 글자를 가로지르며 들어갔다 나오는 모습이 됩니다. 태그가 한 덩어리로 행동해야 한다는 모델을 여기서도 지킵니다.
 
-#### ArrowUp/Down + 라인 보정```tsx
+#### ArrowUp/Down + 라인 보정
+
+```tsx
 function resolveLineDiv(
   root: HTMLElement,
   range: Range,
@@ -753,7 +767,9 @@ keydownEvent$ = fromEvent<KeyboardEvent>(document, "keydown", {
 
 지금까지의 인터랙션이 다 동작한다고 해서 끝이 아니었습니다. CTI 통화 중에 SMS를 작성하는 시나리오 특성상, 사용자가 빠르게 타이핑하고 곧장 발송하는 흐름이 잦았습니다. 작은 lag도 통화 흐름을 깨뜨려서 체감되는 부분들이 컸습니다.
 
-#### ref와 state를 의도적으로 이중화```tsx
+#### ref와 state를 의도적으로 이중화
+
+```tsx
 const [selectedCommandItemIndex, setSelectedCommandItemIndex] =
   useState<number>(0)
 const commandBoxOptionRef = useRef<CtiSmsTemplateCommandBoxProps>({
@@ -769,7 +785,9 @@ const commandBoxOptionRef = useRef<CtiSmsTemplateCommandBoxProps>({
 
 같은 데이터를 두 곳에 두는 건 보통 안티패턴으로 분류되지만, RxJS 스트림과 React 렌더링이 만나는 지점에서는 의도적인 분리가 더 안전했습니다. 구독을 effect 의존성에 매번 다시 거는 건 비용이 크고, 재구독 사이에 들어온 키 이벤트가 잠깐 누락되는 케이스도 생깁니다.
 
-#### 검색어 debounce 300ms```tsx
+#### 검색어 debounce 300ms
+
+```tsx
 const debouncedSearch = useMemo(
   () =>
     debounce((keyword: string | undefined) => {
@@ -786,7 +804,9 @@ useEffect(() => {
 
 사용자가 검색어를 한 글자씩 입력할 때마다 네트워크 요청을 보내면 부담이 큽니다. 300ms debounce로 “타이핑이 잠깐 멈춘 시점”만 잡았습니다. cleanup에서 `cancel()`을 호출해 컴포넌트 언마운트 시 보류된 호출이 새지 않게 했습니다.
 
-#### throttleTime으로 마우스 모드 전환```tsx
+#### throttleTime으로 마우스 모드 전환
+
+```tsx
 mouseMove$ = fromEvent<MouseEvent>(document, "mousemove")
   .pipe(throttleTime(300))
   .subscribe(() => setIsMouseCaptured(false))
@@ -797,7 +817,9 @@ mouseMove$ = fromEvent<MouseEvent>(document, "mousemove")
 #### 스크롤 페이징 중복 호출 방지
 `pairwise()` + `isUserScrollingDown` 패턴은 위에서 다뤘으니 짧게만 짚으면, “한 번 95%를 지났다고 매번 fetchMore가 호출되는” 케이스를 막기 위함이었습니다. 사용자가 위로 스크롤했다가 다시 같은 위치로 돌아오는 경우에도 중복 호출이 나지 않습니다.
 
-#### queueMicrotask로 DOM mutation 직후 안정화```tsx
+#### queueMicrotask로 DOM mutation 직후 안정화
+
+```tsx
 setTimeout(() => {
   cursorPositionRef.current = getCurrentOffset() - 1
   queueMicrotask(() => {

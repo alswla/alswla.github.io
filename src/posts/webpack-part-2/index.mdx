@@ -655,7 +655,9 @@ module.exports = {
 #### style-loader는 어디로 갔을까?
 앞서 말했듯이, 개발 단계에서는 CSS를 JS에 포함시키는 방식이 유리합니다. 이때 사용하는 로더가 바로 style-loader였습니다.
 
-#### 하지만, MiniCssExtractPlugin은 style-loader와 동시에 사용하지 않습니다.```tsx
+#### 하지만, MiniCssExtractPlugin은 style-loader와 동시에 사용하지 않습니다.
+
+```tsx
 use: ["style-loader", MiniCssExtractPlugin.loader, "css-loader"]
 ```
 
