@@ -38,8 +38,8 @@ export const Content = styled.div`
     h6 {
       font-weight: 700;
       line-height: 1.4;
-      margin-top: 2em;
-      margin-bottom: 0.7em;
+      margin-top: 2.4em;
+      margin-bottom: 0.8em;
     }
     h1 {
       font-size: 1.8em;
@@ -57,7 +57,13 @@ export const Content = styled.div`
     }
 
     p {
-      margin: 1em 0;
+      margin: 1.3em 0;
+    }
+
+    /* paragraph that's just a single bold phrase → treat as a sub-heading break */
+    p:has(> strong:only-child) {
+      margin-top: 2em;
+      margin-bottom: 0.6em;
     }
 
     strong,
@@ -83,7 +89,7 @@ export const Content = styled.div`
     ul,
     ol {
       padding-left: 1.5em;
-      margin: 1em 0;
+      margin: 1.5em 0;
     }
 
     ul {
@@ -94,7 +100,13 @@ export const Content = styled.div`
     }
 
     li {
-      margin: 0.3em 0;
+      margin: 0.6em 0;
+    }
+
+    /* a top-level bullet that is just one bold sentence → visible breathing room */
+    #content > ul > li > p:first-child:has(> strong:only-child),
+    #content > ul > li:has(> strong:only-child) {
+      margin-top: 1.4em;
     }
 
     blockquote {
@@ -158,7 +170,7 @@ export const Content = styled.div`
     }
 
     pre {
-      margin: 1.2em 0;
+      margin: 1.6em 0;
       padding: 1em 1.2em;
       background: #1e1e1e;
       border-radius: 8px;
