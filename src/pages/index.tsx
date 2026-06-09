@@ -19,7 +19,7 @@ const Grid = styled.div`
 
 export default function Index({
   data: {
-    allContentfulPost: { nodes },
+    allMdx: { nodes },
   },
   location,
 }: PageProps<Queries.IndexPageQuery>) {
@@ -32,7 +32,7 @@ export default function Index({
 
   const categories = nodes.reduce<Record<string, number>>(
     (acc, post) => {
-      post.category
+      post.frontmatter?.category
         ?.filter((c): c is string => !!c)
         .forEach(c => (acc[c] = (acc[c] ?? 0) + 1))
       return acc
@@ -41,8 +41,9 @@ export default function Index({
   )
 
   const posts = nodes.filter(
-    ({ category }) =>
-      selectedCategory === "All" || category?.includes(selectedCategory),
+    ({ frontmatter }) =>
+      selectedCategory === "All" ||
+      frontmatter?.category?.includes(selectedCategory),
   )
 
   return (
@@ -55,17 +56,20 @@ export default function Index({
 
 export const query = graphql`
   query IndexPage {
-    allContentfulPost(sort: { date: DESC }) {
+    allMdx(sort: { frontmatter: { date: DESC } }) {
       nodes {
-        title
-        category
-        slug
-        date
-        thumbnail {
-          gatsbyImageData(width: 300)
-        }
-        description {
+        id
+        frontmatter {
+          title
+          category
+          slug
+          date
           description
+          thumbnail {
+            childImageSharp {
+              gatsbyImageData(width: 300)
+            }
+          }
         }
       }
     }

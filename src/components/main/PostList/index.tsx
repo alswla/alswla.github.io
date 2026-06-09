@@ -4,7 +4,7 @@ import PostItem from "../PostItem"
 import * as L from "./PostList.styles"
 
 type PostListProps = {
-  posts: Queries.IndexPageQuery["allContentfulPost"]["nodes"]
+  posts: Queries.IndexPageQuery["allMdx"]["nodes"]
 }
 
 export default function PostList({ posts }: PostListProps) {
@@ -14,15 +14,18 @@ export default function PostList({ posts }: PostListProps) {
 
   return (
     <L.Wrapper>
-      {posts.map(({ title, category, slug, date, thumbnail, description }) => (
+      {posts.map(({ frontmatter }) => (
         <PostItem
-          key={slug}
-          title={title as string}
-          date={date as string}
-          category={(category ?? []) as string[]}
-          description={description?.description as string}
-          slug={slug as string}
-          thumbnail={thumbnail?.gatsbyImageData as IGatsbyImageData | null}
+          key={frontmatter?.slug as string}
+          title={frontmatter?.title as string}
+          date={frontmatter?.date as string}
+          category={(frontmatter?.category ?? []) as string[]}
+          description={frontmatter?.description as string}
+          slug={frontmatter?.slug as string}
+          thumbnail={
+            frontmatter?.thumbnail?.childImageSharp
+              ?.gatsbyImageData as IGatsbyImageData | null
+          }
         />
       ))}
     </L.Wrapper>

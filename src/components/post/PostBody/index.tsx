@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { ReactNode, useEffect } from "react"
 import Prism from "prismjs"
 
 import * as B from "./PostBody.styles"
@@ -7,25 +7,25 @@ import "prismjs/components/prism-jsx"
 import "prismjs/components/prism-tsx"
 
 import Comment from "../Comment"
-import TableOfContents from "../TableOfContents"
-import useRenderRichText from "../../../hooks/useRenderRichText"
+import TableOfContents, { TocData } from "../TableOfContents"
 
 type PostBodyProps = {
-  content: Queries.ContentfulPostContent
+  children: ReactNode
+  tableOfContents: TocData
 }
 
-export default function PostBody({ content }: PostBodyProps) {
-  const richText = useRenderRichText(content)
-
-  useEffect(Prism.highlightAll, [])
+export default function PostBody({ children, tableOfContents }: PostBodyProps) {
+  useEffect(() => {
+    Prism.highlightAll()
+  }, [children])
 
   return (
     <B.Wrapper>
       <B.Content>
-        <div id="content">{richText}</div>
+        <div id="content">{children}</div>
         <Comment />
       </B.Content>
-      <TableOfContents content={content} />
+      <TableOfContents items={tableOfContents} />
     </B.Wrapper>
   )
 }

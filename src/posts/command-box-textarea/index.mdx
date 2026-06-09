@@ -1,0 +1,894 @@
+---
+title: 텍스트에디터에 커맨드박스 띄우기 (2) — Textarea
+slug: command-box-textarea
+date: 2026-06-07
+category:
+  - Textarea
+  - RxJS
+  - 텍스트에디터
+  - React
+description: Textarea 기반 채팅 입력창에 `#` 트리거 커맨드박스를 새로 구현하며 미러 div로 캐럿 좌표 계산, Portal/Positioning 레이어 분리, RxJS 이벤트 컨트롤러 패턴으로 입력·키보드·스크롤·외부클릭을 통합 제어한 과정을 정리했습니다.
+---
+
+ContentEditable div의 커맨드박스를 구현한 이후 2주 뒤, 다른 모듈에서 커맨드박스를 띄워야한다는 개발건이 들어오게 되었습니다. UI가 달라서 별도로 구현해야할지 혹은 기존에 구현했던 것을 모듈화하여 재사용을 해야할지 고민하였습니다.
+
+하지만 해당 모듈에서 구현된 텍스트에디터는 textarea를 기반으로 만들어졌고 UI 역시 다른 부분이 많아 해당 모듈의 전용 커맨드박스를 새롭게 구현하게 되었습니다.
+
+## 1) 본격적으로 개발하기 전 공용 Ref 분리하기 (텍스트에디터 ref, 커맨드박스 상태)
+
+- **“Textarea ↔ CommandBox를 같은 화면 상태로 묶고, 조건부로 CommandBox를 Mount**
+
+```tsx
+const textAreaRef = useRef<TextareaImperativeHandleRef>(null);
+const hashIndexRef = useRef<number | null>(null);
+const [isCommandBoxOpened, setIsCommandBoxOpened] = useState(false);
+
+<ChatInputTextarea
+  textAreaRef={textAreaRef}
+  hashIndexRef={hashIndexRef}
+  commandBoxOpened={isCommandBoxOpened}
+  onOpenCommandBox={() => setIsCommandBoxOpened(true)}
+/>
+
+{isCommandBoxOpened && (
+  <ChatInputCommandBoxContainer
+    isOpened={isCommandBoxOpened}
+    setIsOpened={setIsCommandBoxOpened}
+    textEditorRef={textAreaRef}
+    hashIndexRef={hashIndexRef}
+    locale={defaultLanguage}
+    onSetTextInput={(next) => actions.onSetTextInput(next)}
+  />
+)}
+```
+
+우선 과거에는 `textAreaRef` 가 `ChatInputTextarea` 내부에 존재하고 있었습니다.
+
+하지만 커맨드박스에서도 textarea에 입력하는 #을 감지하여 커맨드박스 오픈 여부를 결정해야했기 때문에 해당 `textAreaRef` 를 상위로 올려 단일 책임 분리하도록 했습니다.
+
+- `ChatInputTextarea`는 입력, # 감지, submit 차단에 집중하고 `ChatInputCommandBoxContainer`는 검색, 리스트, 키보드 내비, 템플릿 적용, 위치 계산에 집중합니다.
+
+그리고 `hashIndexRef`라는 `ref`를 둔 이유는 #가 찍히는 위치는 렌더링을 유발할 상태가 아니라 “즉시 참조해야하는 커서 기반 인덱스”라서 state보다는 ref가 더 안전하고 불필요한 렌더를 줄일 수 있습니다. (특히 빠른 입력/연속 이벤트)
+
+그렇다면 여기서 ref, state 이유 말고 왜 index를 저장해야하는지 의문이 들 수 있습니다. 해당 커맨드박스를 새롭게 구현하게 된 이유이기도 한데요, 이는 textarea라서 입니다.
+
+좀 더 자세하게 말해보자면,
+
+- **textarea는 DOM 내부 노드로 caret 위치를 얻거나 특정 문자 좌표를 얻는 API(Selection, Range)가 없음 → 결국 “문자열 인덱스 기반” + “미러 div로 좌표 계산”이 필요해집니다.**
+
+만약 텍스트에디터가 contentEditable 이었다면 `hashIndexRef` 와 같은 문자열 인덱스 대신에 Range/Selection anchor를 저장하는 형태로 구현했을 것입니다.
+
+```tsx
+const editorRef = useRef<HTMLDivElement>(null);
+const triggerRangeRef = useRef<Range | null>(null); // ref를 Range 타입으로
+const [isCommandBoxOpened, setIsCommandBoxOpened] = useState(false);
+```
+
+그리고 `ChatInputTextarea` (텍스트에디터)에서 `onTextInput` 함수 내부에서 Selection, Range을 활용해 # 위치를 저장하였을 것입니다. 해당 로직은 `ChatInputTextarea` 에서 자세하게 살펴보겠습니다.
+
+## 2) 텍스트에디터에서 커맨드박스 트리거(’#’) 찾기
+
+- ‘#’ 입력시 커맨드박스 오픈 상태를 변경하고, 이후 입력값을 검색어 키워드 처리하기
+
+이제 텍스트에디터 내부 로직을 변경해보도록 하겠습니다. 우선 제가 전달받은 커맨드박스 요구사항들 중 텍스트에디터와 관련된사항들은 아래와 같습니다.
+
+1. 텍스트에디터에서 #을 입력시 커맨드박스가 표시
+2. 커맨드박스가 열리고 ‘#’ 이후에 키워드 입력시 해당 키워드가 포함된 템플릿만 표시되도록 검색어 처리
+3. 템플릿을 선택하면 해당 템플릿 콘텐츠가 텍스트에디터에 붙여넣기 되며 `#{검색어}` 는 삭제처리
+
+이를 위해서 `ChatInputTextarea` 에 `onChangeTextInput` 라는 텍스트입력 `onChange` 용 핸들러 함수를 수정했습니다.
+
+*참고로, `onKeydown`이 아닌 `onChange` 핸들러로 #을 감지한 이유는, keydown은 **“문자가 value에 반영되기 전”**에 이벤트가 전달되기 때문에 caret 혹은 문자의 위치가 흔들릴 수 있기 때문입니다. (특히 IME/조합 입력, Textarea DS 내부처리 등)*
+
+기존의 `onChangeInput` 은 아래와 같았습니다.
+
+```tsx
+ const onChangeTextInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    actions.onSetTextInput(e.target.value);
+  };
+```
+
+단순하게 사용자가 입력한 내용을 jotai로 전역상태 관리하고 있는 함수였습니다.
+
+하지만, 사용자가 ‘#’이라는 텍스트를 입력하는 순간, 커맨드박스를 오픈해야하기에 해당 함수 역시 보다 복잡하게 변경되어야 했고, 아래와 같이 수정하였습니다.
+
+```tsx
+// 이전 value 기억 (onChange에서 "# 신규 입력" 감지용)
+const prevValueRef = useRef<string>(baseInputText ?? '');
+const onChangeTextInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
+  const nextValue = e.target.value;
+  const caret = e.target.selectionStart ?? nextValue.length;
+
+  const prevValue = prevValueRef.current;
+
+  // store 업데이트
+  actions.onSetTextInput(nextValue);
+
+  // ref 갱신 (중요!)
+  prevValueRef.current = nextValue;
+
+  if (commandBoxOpened) return;
+
+  const idx = caret - 1;
+  if (idx < 0) return;
+
+  // 방금 #이 들어온 자리인지 체크 (길이 비교 X)
+  const justTypedHash = nextValue[idx] === '#' && (prevValue[idx] ?? '') !== '#';
+
+  if (justTypedHash) {
+    hashIndexRef.current = idx;
+    onOpenCommandBox();
+  }
+};
+```
+
+커맨드박스의 경우 사용자가 지금 막 ‘#’을 눌러서 새 ‘#’이 삽입된 순간을 감지해야합니다.
+
+이 말은 즉, 해당 ‘#’이 커서의 바로 앞에 있는 순간인 caret의 index - 1 이라는 것입니다.
+
+따라서 저는 1)커서의 바로 앞 인덱스(caret - 1)의 문자가 ‘#’인지, 그리고 2) 해당 인덱스의 직전 문자가 ‘#’인지를 확인해서 정말 해당 ‘#’가 새로 생긴 것인지를 판단했습니다.
+
+어떤 분들의 경우 문자열의 길이 기반으로, “문자열 길이가 1 늘었고, 그 늘어난 위치의 값이 ‘#’이면 방금 ‘#’을 입력했을 것이다.”라는 추론을 하여 문자열 길이를 통해 비교할 수도 있을 것입니다.
+
+하지만, 문자열 길이로 트리거 여부를 판단하게 되었을 때 아래 문제가 발생할 수 있습니다.
+
+> **길이 비교 방식의 한계**
+>
+> - abc 에서 b를 드래그하여 #을 입력하는 경우
+>   - prev: “abc” (length: 3)
+>   - next: “a#c” (length: 3)
+>   - → 사용자는 #을 새로 입력했지만 길이비교 방식은 잡을 수 없습니다.
+> - 그 외에도, IME(한글조합), 자동완성, 모바일 키보드와 같은 경우도 문제가 생길 수 있습니다.
+>   - 한번의 onChange에서 여러 글자가 바뀜
+>   - caret, selectionStart 타이밍이 미묘하게 흔들림
+>   - 중간 조합 상태에서 length 규칙 깨질 수 있음
+
+물론, 지금 로직만으로는 붙여넣기를 하고 그 중간에 ‘#’이 들어있으면 문제가 되겠지만, 저희 커맨드박스 오픈 정책에서는 사용자가 입력한 ‘#’만을 판단하기로 했기 때문에 현재 로직으로 충분했습니다.
+
+## 3) ‘커맨드박스’를 만들어보자
+
+### 3-1. 커맨드박스 Portal 띄우기
+
+가장 처음 이미지로 보여드렸듯이 커멘드박스는 입력창 위에 떠야하는 overlay 형태입니다. 상위 레이아웃이 overflow hidden 혹은 stacking context가 있으면 잘릴 수 있습니다.
+
+따라서 portal을 body로 올려 커맨드박스를 항상 입력창 위에 띄울 수 있도록 했습니다.
+
+우선 아래는 완성된 커맨드박스의 컴포넌트 형태입니다. 가장 상위로 감싼 `CommandBoxWithPortal` 이 바로 Portal 입니다.
+
+```tsx
+<CommandBoxWithPortal>
+  <ChatInputCommandBoxWrapper
+    toolPositionProp={commandBoxPosition}
+    wrapperRefCallback={(el) => {
+      commandBoxWrapperRef.current = el;
+    }}>
+    <Suspense fallback={<ChatInputCommandBoxContainerSkeleton />}>
+      <CommandBoxList
+        locale={locale}
+        selectedIndex={selectedTemplateIndex}
+        onHoverIndexChange={handleHoverIndexChange}
+        commandBoxRefCallback={bindTemplateListRef}
+        onItemClick={applyTemplateItem}
+        onUseTemplateListQuery={handleUseTemplateListQuery}
+      />
+    </Suspense>
+  </ChatInputCommandBoxWrapper>
+</CommandBoxWithPortal>
+```
+
+이때 portal을 바로 만드는것이 아니고 children을 받는 컴포넌트 형태로 구성했습니다. (레이어드 아키텍쳐 구성을 위함)
+
+```tsx
+interface PortalWrapProps {
+  children?: ReactNode;
+}
+
+export function CommandBoxWithPortal({ children }: PortalWrapProps) {
+  const subDiv = useMemo(() => {
+    const div = document.createElement('div');
+    div.style.position = 'fixed';
+    div.style.zIndex = '100';
+    div.style.width = '100%';
+    div.style.height = '100%';
+    div.style.top = '0';
+    div.setAttribute('data-mf-{모듈명}', 'true');
+    div.id = 'portal_wrap';
+    return div;
+  }, []);
+
+  useEffect(() => {
+    document.body.appendChild(subDiv);
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = 'unset';
+      subDiv.remove();
+    };
+  }, [subDiv]);
+
+  return createPortal(<div className='fixed h-screen w-screen'>{children}</div>, subDiv);
+}
+```
+
+우선 커맨드박스 위치 계산을 브라우저 기준으로 하기위해 subDiv를 만들고 컴포넌트가 화면에 반영된 후 DOM에 영향을 주고 언마운트시 clean up을 통해 원상태로 되돌리는(unset) 구조 입니다.
+
+해당 컴포넌트보다 가벼운 버전으로도 충분할 수 있지만, 현재 서비스의 모든 포탈구조가 다음과 같은 형태를 따르고 있어 컨벤션을 맞추기 위해 최대한 구조를 맞춰 작성했습니다.
+
+### 3-2. 커맨드 박스의 위치 계산하기
+
+커맨드 박스를 Portal로 띄워야하는데 어디에 띄워야할까요? 위치는 기획마다 다르겠지만 제가 요구받은 위치는 사용자가 입력한 ‘#’의 윗부분이었습니다.
+
+커맨드 박스의 위치를 계산하는 Positioning을 레이어로 분리해서 책임을 별도로 구분하기로 했습니다. (Portal 처럼)
+
+```tsx
+interface ChatInputCommandBoxWrapperProps {
+  toolPositionProp: CommandBoxPosition;
+  wrapperRefCallback: (el: HTMLDivElement | null) => void;
+  children: ReactNode;
+}
+
+export function ChatInputCommandBoxWrapper({
+  toolPositionProp,
+  wrapperRefCallback,
+  children,
+}: ChatInputCommandBoxWrapperProps) {
+  const [boxEl, setBoxEl] = useState<HTMLDivElement | null>(null);
+  const [boxPosition, setBoxPosition] = useState<CommandBoxPosition>(() => ({
+    left: toolPositionProp.left ?? 0,
+    top: toolPositionProp.top ?? 0,
+  }));
+
+  const handleWrapperRefCallback = useCallback(
+    (el: HTMLDivElement | null) => {
+      setBoxEl(el);
+      wrapperRefCallback(el);
+    },
+    [wrapperRefCallback],
+  );
+
+  useLayoutEffect(() => {
+    if (!boxEl) return;
+
+    const updatePosition = () => {
+      const viewportWidth = document.documentElement.clientWidth;
+
+      const nextTop = toolPositionProp.top ?? 0;
+      const nextLeft = toolPositionProp.left ?? 0;
+
+      // 우측 overflow 방지
+      const boxRect = boxEl.getBoundingClientRect();
+      const boxRight = nextLeft + boxRect.width;
+      const safeLeft =
+        boxRight + COMMAND_BOX_RIGHT_SAFE_OFFSET > viewportWidth
+          ? Math.max(0, viewportWidth - (boxRect.width + COMMAND_BOX_RIGHT_SAFE_OFFSET))
+          : nextLeft;
+
+      setBoxPosition({ left: safeLeft, top: nextTop });
+    };
+
+    requestAnimationFrame(updatePosition);
+  }, [boxEl, toolPositionProp.left, toolPositionProp.top]);
+
+  const commandBoxStyle: CSSProperties = {
+    position: 'fixed',
+    zIndex: 9999,
+    left: `${boxPosition.left}px`,
+    top: `${boxPosition.top}px`,
+    transform: `translateY(calc(-100% - ${COMMAND_BOX_GAP}px))`, // 박스 자체를 위로 올려서 # 안 가리게
+  };
+
+  return (
+    <div
+      style={commandBoxStyle}
+      className='bg-pltt-origin-white100 shadow-pltt-medium rounded-pltt-md max-h-[403px] overflow-y-auto pointer-events-auto'
+      ref={handleWrapperRefCallback}
+      data-command-box-wrapper='true'
+      onMouseDown={(e) => e.stopPropagation()}>
+      {children}
+    </div>
+  );
+}
+```
+
+여기서 핵심은 `useLayoutEffect` 부분입니다. 우선 내부의 함수는 함수명으로 유추할 수 있듯이 포지션을 계산하는 함수입니다.
+
+`useLayoutEffect`를 사용한 이유는 다들 예상하시겠지만, 위치 계산은 화면에 그리기 직전 flicker 없이 진행되어야하기 때문에 레이아웃 단계에서 해야합니다. 이를 위해 `useEffect`가 아닌 `useLayoutEffect`를 사용하여 내부에서 포지션을 계산했습니다.
+
+`updatePosition`은 viewport와 상위에서 전달받은 기준 좌표(사용자가 입력한 #의 위치)를 비교하여 viewport overflow를 고려하여 포지션을 보정해주는 역할을 합니다.
+
+이후 `requestAnimationFrame`을 사용하여 브라우저가 레이아웃 계산을 완료한 다음 프레임에서 위치 계산을 진행했습니다. (실제 DOM 계산 및 children에서 Suspense 사용하여 fallback 렌더링함 등의 이유)
+
+### 3-3. 커맨드박스에 데이터 불러오기 (UI View 완성하기)
+
+그럼 이제 커맨드박스를 띄우고 위치를 보정하는 포지셔닝 Wrapper까지 완성했습니다. 기준좌표인 `toolPositionProp` 을 주지 않고 빈 div를 children에 넣어보면 # 부근에서 표시되는것을 확인할 수 있습니다.
+
+그렇다면 이제 실제로 데이터를 불러오는 방식은 어떻게 진행되었을까요?
+
+우선 `CommandBoxList`가 실제 커맨드박스 내부의 템플릿 데이터 리스트를 표시할 컴포넌트인데, `Suspense`를 감싸고 `fallback`을 통해 데이터가 로드될때까지 Skeleton UI를 표시해주었습니다.
+
+```tsx
+ <Suspense fallback={<ChatInputCommandBoxContainerSkeleton />}>
+	  <CommandBoxList
+	    locale={locale}
+	    selectedIndex={selectedTemplateIndex}
+	    onHoverIndexChange={handleHoverIndexChange}
+	    commandBoxRefCallback={bindTemplateListRef}
+	    onItemClick={applyTemplateItem}
+	    onUseTemplateListQuery={handleUseTemplateListQuery}
+	  />
+</Suspense>
+```
+
+사실 `useSuspenseQuery`를 쓰지 않고 `useQuery`를 사용했다면, 리턴 값인 `loading` 상태를 통해 `CommandBoxList`와 `ChatInputCommandBox`를 분리하지 않고 하나의 컴포넌트 안에서 조건부 렌더링으로 충분히 구현할 수도 있었습니다.
+
+다만 이 커맨드박스는 **부분 데이터 로딩이 반복적으로 발생하는 UI**였고, 그 과정에서도 기존 리스트 UI와 키보드 탐색 흐름을 유지해야 했기 때문에, loading, fetchMore, selection, focus 같은 상태 전이를 컴포넌트 내부 분기 로직으로 직접 관리하는 위험을 줄이고 싶었습니다.
+
+그래서 cursor 기반 데이터 조회 및 확장 로직 부분을 `CommandBoxList` 라는 별도의 조합 레이어로 분리하고, 이 레이어가 제공할 수 있는 기능만을 명시적인 인터페이스 형태로 상위에 노출하는 구조를 선택했습니다.
+
+이를 통해 상위 컴포넌트는 키보드 입력(arrow down/up, 스크롤 등)과 선택 흐름을 중심으로 제어하고, 데이터 로딩 방식이나 내부 구현에 대한 의존 없이 일관된 방식으로 `CommandBox`를 관리할 수 있도록 했습니다. (내부에서 사용한 훅에 대해서는 이후 더 자세히 다루겠습니다.)
+
+```tsx
+export type CommandBoxListQueryApi = {
+  templateItems: CommandBoxTemplateItem[];
+  fetchMoreTemplateData: () => void;
+  setInputValue: (v: string) => void;
+  reset: () => void;
+  hasNextPage: boolean;
+};
+
+interface CommandBoxListProps {
+  locale: LocaleEnum;
+  selectedIndex: number;
+
+  commandBoxRefCallback: (el: HTMLDivElement | null) => void;
+  onItemClick: (item: CommandBoxTemplateItem) => void;
+  onHoverIndexChange: (idx: number) => void;
+
+  onUseTemplateListQuery: (query: CommandBoxListQueryApi) => void;
+}
+
+export function CommandBoxList({
+  locale,
+  selectedIndex,
+  commandBoxRefCallback,
+  onItemClick,
+  onHoverIndexChange,
+  onUseTemplateListQuery,
+}: CommandBoxListProps) {
+	/** 템플릿 데이터 무한스크롤 쿼리 훅 */
+  const { templateItems, fetchMoreTemplateData, getTemplateDataByKeyword, hasNextPage } =
+    useChatTemplateData({
+      pageSize: 10,
+    });
+
+  /** 템플릿 검색어를 관리하는 훅 */
+  const { setInputValue, inputValue, reset } = useCommandBoxSearch({
+    search: getTemplateDataByKeyword,
+  });
+
+	/** 템플릿 검색어와 일치하는 템플릿 글자 하이라이트 훅 */
+  const highlightTitleMap = useHighlightedTemplateTitles({
+    templateItems,
+    keyword: inputValue,
+  });
+
+  useEffect(() => {
+    onUseTemplateListQuery({
+      templateItems,
+      fetchMoreTemplateData,
+      setInputValue,
+      reset,
+      hasNextPage,
+    });
+  }, [
+    templateItems,
+    fetchMoreTemplateData,
+    setInputValue,
+    reset,
+    onUseTemplateListQuery,
+    hasNextPage,
+  ]);
+
+	/** ChatInputCommandBox: 실제 커맨드박스 내 템플릿 리스트 및 preview UI 담당 컴포넌트 **/
+  return (
+    <ChatInputCommandBox
+      templateItems={templateItems}
+      locale={locale}
+      selectedIndex={selectedIndex}
+      highlightTitleMap={highlightTitleMap}
+      commandBoxRefCallback={commandBoxRefCallback}
+      onItemClick={(index: number) => {
+        const item = templateItems[index];
+        if (!item) return;
+        onItemClick(item);
+      }}
+      onHoverIndexChange={onHoverIndexChange}
+    />
+  );
+}
+```
+
+> **왜 hook이 아닌 ref를 사용해 api를 등록했을까?**
+>
+> 이건 “상태를 재사용하는 훅” 문제가 아니라, 하위 컴포넌트가 제공하는 동적 기능을 상위 이벤트 시스템에 ‘등록(register)’하는 문제였기 때문에 hook보다 ref + useEffect가 맞았습니다.
+>
+> React hook은 기본적으로
+> - **자기 내부 상태를 관리**하거나
+> - **외부 시스템을 구독**하거나
+> - **재사용 가능한 로직**을 캡슐화
+>
+> 하는 용도로 보통 아래와 같은 형태로 사용되며, 호출한 쪽이 주도권을 가집니다.
+>
+> ```tsx
+> const { data, fetchMore } = useSomething();
+> ```
+>
+> 하지만, 현재 구조에서는 주도권이 반대입니다.
+>
+> 지금 구조에서는:
+> - 데이터 로딩 로직 → `CommandBoxList` (하위)
+> - 이벤트 트리거 → 상위 (키보드, 스크롤)
+>
+> 즉, “하위가 기능을 만들어서, 상위에 제공해야 하는 구조”로, 이걸 hook으로 만들면 자연스럽지 않습니다.
+>
+> 또한 hook으로 만들면 상위가 데이터쿼리, 검색상태, fetch를 직접 소유하게되는 문제 외에도 Suspense boundary가 깨지며 키보드 이벤트에도 영향이 미칠 수 있습니다.
+> - 상위에서 `useSuspenseQuery` 호출
+> - 상위 전체가 suspend
+
+## 4) 다양한 이벤트로 커맨드박스 제어하기 (feat. RxJS)
+
+이제 커맨드박스의 기본적인 UI와 동작은 완성되었습니다. 하지만 실제로 사용 가능한 컴포넌트가 되기 위해서는 **이벤트 처리**가 남아 있습니다.
+
+커맨드박스를 열어 템플릿을 선택해 에디터에 입력하는 과정에서, 사용자는 제한적인 뷰 안에서 여러 템플릿을 탐색해야 합니다.
+
+일반적으로는 스크롤을 내려가며 리스트를 확인하고, 원하는 템플릿을 발견하면 클릭을 통해 선택할 수 있습니다. 하지만 많은 사용자들은 반복적인 마우스 클릭을 번거롭게 느끼기도 합니다.
+
+커맨드박스를 연 직후 바로 키보드로 템플릿 순서를 이동하고 싶을 수도 있고, 엔터 키만으로 선택을 완료하고 싶을 수도 있으며, 입력과 동시에 검색을 통해 템플릿을 좁혀보고 싶을 수도 있습니다.
+
+따라서 커맨드박스는 단순한 클릭 UI가 아니라, **키보드 이벤트, 마우스 이벤트, 스크롤 이벤트가 함께 작동하는 인터랙션 중심 UI**로 설계될 필요가 있습니다.
+
+이러한 다양한 이벤트를 하나의 흐름으로 안정적으로 제어하기 위해, 본 구현에서는 RxJS를 사용해 이벤트를 스트림 단위로 구성했습니다.
+
+### 4-1. 커맨드박스를 이벤트 컨트롤러로 바라보기
+
+위에서 언급했듯이 커맨드박스에서는 텍스트 입력, 키보드 네비게이션, 스크롤, 외부 클릭과 같은 다양한 이벤트들을 제어해야합니다. 각각의 이벤트들은 서로 다른 DOM에서 발생하지만, 결국에는 모든 하나의 상태를 바꾸거나 하나의 행동으로 수렴합니다.
+
+이런 구조에서는 개별 컴포넌트가 각각의 이벤트를 처리하기보다는 하나의 컨트롤러에서 이벤트 흐름을 통합적으로 관리하는 구조가 적합할 것이라 판단했습니다.
+
+아래는 `ChatInputCommandBoxContainer` 의 코드의 일부로 첫 시작 부분입니다.
+
+```tsx
+export function ChatInputCommandBoxContainer({
+  isOpened,
+  hashIndexRef,
+  locale,
+  onSetTextInput,
+  setIsOpened,
+  textEditorRef,
+}: ChatInputCommandBoxContainerProps) {
+  /* UI용 인덱스 */
+  const [selectedTemplateIndex, setSelectedTemplateIndex] = useState<number>(0);
+  const [commandBoxPosition, setCommandBoxPosition] = useState<CommandBoxPosition>({
+    top: 0,
+    left: 0,
+  });
+
+  /* RxJS 사용 인덱스 */
+  const selectedTemplateIndexRef = useRef<number>(0);
+  const commandBoxWrapperRef = useRef<HTMLDivElement | null>(null);
+  const templateListRef = useRef<HTMLDivElement | null>(null);
+
+  // 스크롤 구독 + keyword 기준 리셋
+  const listScrollSubRef = useRef<Subscription | null>(null);
+  const lastKeywordRef = useRef<string>('');
+
+  // ...
+```
+
+여기서 핵심은 선택된 인덱스를 state와 ref 두 곳에 둔 부분입니다.
+
+- **state(`selectedTemplateIndex`)** — UI 렌더링용입니다. 어떤 아이템이 강조될지 결정하기 위한 리렌더링이 필요합니다.
+- **ref(`selectedTemplateIndexRef`)** — RxJS 스트림 핸들러용입니다. document 단위 keydown 구독은 컴포넌트 생애 동안 한 번만 거는데, state를 그대로 참조하면 클로저에 갇혀 stale value가 들어옵니다. ref로 두면 핸들러는 항상 최신값을 봅니다.
+
+같은 데이터를 두 곳에 두는 게 보통은 안티패턴이지만, RxJS 스트림과 React 리렌더링이 만나는 지점에서는 의도적인 분리가 더 안전했습니다. 구독을 effect 의존성에 매번 다시 거는 건 비용이 크고, 재구독 사이에 들어온 키 이벤트가 누락되는 케이스가 생깁니다.
+
+그 다음으로 신경 쓴 패턴은 `templateListQueryRef` 입니다.
+
+```tsx
+const templateListQueryRef = useRef<CommandBoxListQueryApi | null>(null);
+const handleUseTemplateListQuery = useCallback((api: CommandBoxListQueryApi) => {
+  templateListQueryRef.current = api;
+}, []);
+```
+
+위에서 다룬 것처럼 `CommandBoxList`는 `Suspense` 아래에 있어서 데이터 로딩 동안에는 트리에 존재하지 않습니다. 그런데 컨테이너에서는 키보드 이벤트(ArrowDown으로 fetchMore, 박스 닫을 때 reset 등)를 처리하면서 그 API를 호출해야 합니다.
+
+해결책은 “하위가 마운트된 시점에 API를 ref에 등록”하는 패턴입니다. `CommandBoxList`가 마운트되면 `onUseTemplateListQuery`로 자기 API를 컨테이너에 전달하고, 컨테이너는 그걸 ref에 보관해두면 됩니다. Suspense fallback 동안에는 ref가 null이지만, 그 동안에는 어차피 키보드 네비도 의미 없으므로 자연스럽게 안전한 상태가 유지됩니다.
+
+리스트 DOM 자체에 대한 scroll 구독은 callback ref에서 직접 관리했습니다.
+
+```tsx
+const bindTemplateListRef = useCallback((el: HTMLDivElement | null) => {
+  templateListRef.current = el;
+
+  listScrollSubRef.current?.unsubscribe();
+  listScrollSubRef.current = null;
+
+  if (!el) return;
+
+  listScrollSubRef.current = fromEvent(el, 'scroll').subscribe(() => {
+    const percent = ((el.scrollTop + el.clientHeight) / el.scrollHeight) * 100;
+    if (percent >= SCROLL_THRESHOLD) {
+      templateListQueryRef.current?.fetchMoreTemplateData?.();
+    }
+  });
+}, []);
+```
+
+`useRef` + `useEffect` 조합으로 scroll을 구독하면 “el이 null로 잠시 떨어졌다가 다시 붙는” 타이밍을 놓치는 케이스가 생깁니다. callback ref에서 el이 들어올 때 직접 subscribe하고, el이 빠지면 unsubscribe하는 패턴이 lifecycle을 단순하게 만들어줍니다.
+
+### 4-2. 미러 div로 textarea의 ‘#’ 좌표 계산하기
+
+- **textarea는 caret의 화면 좌표를 직접 얻을 방법이 없기 때문에, 동일 스타일의 hidden div를 만들어 `getBoundingClientRect`로 측정합니다**
+
+커맨드박스는 사용자가 입력한 ‘#’ 바로 윗부분에 떠야 합니다. contentEditable이었다면 `selection.getRangeAt(0).getBoundingClientRect()` 한 줄로 끝났을 일인데, textarea에는 그런 API가 없습니다. `selectionStart`로 “문자열의 몇 번째 인덱스인가”까지는 알 수 있지만, 그 인덱스가 viewport에서 어디에 있는지는 직접 알 수 없습니다.
+
+이걸 해결하는 게 “미러 div” 기법입니다.
+
+```tsx
+export const getHashRect = (textarea: HTMLTextAreaElement, index: number) => {
+  const div = document.createElement('div');
+  const style = window.getComputedStyle(textarea);
+
+  for (const prop in style) {
+    div.style.setProperty(prop, style.getPropertyValue(prop));
+  }
+
+  div.style.position = 'absolute';
+  div.style.visibility = 'hidden';
+  div.style.whiteSpace = 'pre-wrap';
+  div.style.overflowWrap = 'break-word';
+
+  // mirror가 textarea와 같은 "내부 스크롤 상태"를 갖게
+  div.style.height = `${textarea.clientHeight}px`;
+  div.style.width = `${textarea.clientWidth}px`;
+  div.scrollTop = textarea.scrollTop;
+  div.scrollLeft = textarea.scrollLeft;
+
+  div.textContent = textarea.value.slice(0, index);
+
+  const span = document.createElement('span');
+  span.textContent = textarea.value.slice(index) || '';
+  div.appendChild(span);
+
+  document.body.appendChild(div);
+
+  const spanRect = span.getBoundingClientRect();
+  document.body.removeChild(div);
+
+  const taRect = textarea.getBoundingClientRect();
+
+  return {
+    top: taRect.top + spanRect.top,
+    left: taRect.left + spanRect.left,
+    width: spanRect.width,
+    height: spanRect.height,
+    right: taRect.left + spanRect.right,
+    bottom: taRect.top + spanRect.bottom,
+  };
+};
+```
+
+핵심 아이디어는 “textarea와 완전히 같은 레이아웃을 가지는 hidden div를 만든 다음, 측정하고 싶은 위치에 span을 박아 그 span의 화면 좌표를 읽는” 것입니다. 이때 세 가지 디테일이 중요했습니다.
+
+- **모든 computed style 복사** : padding, font, line-height, letter-spacing 같은 텍스트 흐름을 결정하는 속성들이 정확히 일치해야 글자 위치가 textarea와 어긋나지 않습니다. `getComputedStyle`을 통해 한꺼번에 복사했습니다.
+- **`white-space: pre-wrap` + `overflow-wrap: break-word`** : textarea의 줄바꿈/자동 줄넘김 동작을 div에서도 똑같이 재현해야 합니다. 이 두 속성이 어긋나면 한 줄이 더/덜 깔리는 차이가 생겨 # 좌표가 한 줄씩 어긋납니다.
+- **scrollTop/scrollLeft 동기화** : textarea가 내부 스크롤된 상태에서 ‘#’이 viewport 밖에 있을 수도 있는데, 미러 div의 scroll 위치를 맞춰주면 span의 `getBoundingClientRect`가 textarea의 시각적 위치와 같은 의미로 측정됩니다.
+
+마지막에 textarea 자체의 `getBoundingClientRect`를 더해주는 이유는, span의 rect가 미러 div의 (0,0)을 기준으로 측정되기 때문입니다. textarea의 viewport 위치를 더해야 “화면 좌표”가 됩니다.
+
+이 함수의 결과(`{ top, left, bottom, ... }`)를 `commandBoxPosition` state에 넣고 wrapper에서 `translateY(-100%)` + gap을 적용해 ‘#’ 위로 박스를 띄웁니다.
+
+### 4-3. input 이벤트로 검색어와 위치 동기화하기
+
+- **문자 입력은 input 이벤트 한 곳에서만 처리. # 유효성 → 공백 → 키워드 추출 → 검색 갱신 → 위치 보정 순서로 흐릅니다**
+
+textarea의 값은 keydown 시점에 아직 반영되지 않습니다. 이 글 초반에 textarea 트리거 감지를 `onChange`에서 처리한 이유와 같은 맥락으로, 검색어 추적도 input 이벤트에서 일괄 처리하는 게 자연스러웠습니다.
+
+```tsx
+useEffect(() => {
+  if (!isOpened) return;
+
+  const subs: Subscription[] = [];
+
+  const bind = () => {
+    const textareaEl = getTextarea(textEditorRef);
+    if (!textareaEl) return false;
+
+    subs.push(fromEvent<InputEvent>(textareaEl, 'input').subscribe(() => syncKeywordOrClose()));
+    subs.push(fromEvent(textareaEl, 'scroll').subscribe(updatePositionFromHashIndex));
+    subs.push(fromEvent(window, 'resize').subscribe(updatePositionFromHashIndex));
+    return true;
+  };
+
+  if (!bind()) {
+    const raf = requestAnimationFrame(() => bind());
+    return () => cancelAnimationFrame(raf);
+  }
+
+  return () => subs.forEach((s) => s.unsubscribe());
+}, [isOpened, textEditorRef, syncKeywordOrClose, updatePositionFromHashIndex]);
+```
+
+`syncKeywordOrClose`가 input 한 번마다 호출되는 핵심 함수입니다.
+
+```tsx
+const syncKeywordOrClose = useCallback(
+  (opts?: { allowClose?: boolean }) => {
+    const allowClose = opts?.allowClose ?? true;
+
+    const textareaEl = getTextarea(textEditorRef);
+    const hashIndex = hashIndexRef.current;
+
+    if (!textareaEl || hashIndex == null) return;
+
+    const nextValue = textareaEl.value ?? '';
+    const nextCaret = textareaEl.selectionStart ?? 0;
+
+    if (!hasHashAtIndex(nextValue, hashIndex)) {
+      if (allowClose) closeCommandBox();
+      return;
+    }
+
+    if (hasSpaceBetweenHashAndCaret(nextValue, hashIndex, nextCaret)) {
+      if (allowClose) closeCommandBox();
+      return;
+    }
+
+    const keyword = extractCommandKeyword({
+      value: nextValue,
+      hashIndex,
+      caretIndex: nextCaret,
+    });
+
+    if (!keyword && nextCaret <= hashIndex) {
+      if (allowClose) closeCommandBox();
+      return;
+    }
+
+    if (keyword !== lastKeywordRef.current) {
+      lastKeywordRef.current = keyword;
+      selectedTemplateIndexRef.current = 0;
+      setSelectedTemplateIndex(0);
+      templateListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+    }
+
+    templateListQueryRef.current?.setInputValue?.(keyword);
+
+    updatePositionFromHashIndex();
+  },
+  [closeCommandBox, hashIndexRef, textEditorRef, updatePositionFromHashIndex],
+);
+```
+
+한 함수 안에서 “지금 박스를 유지해도 되는지”와 “현재 검색어가 무엇인지”를 동시에 결정합니다. 분기를 시간 순서대로 풀어보면:
+
+1. **`hasHashAtIndex`** — 사용자가 저장된 # 위치를 백스페이스로 지운 경우 박스 닫기.
+2. **`hasSpaceBetweenHashAndCaret`** — `#`과 caret 사이에 공백이 있으면 더 이상 “검색어 입력 중”이 아니므로 박스 닫기 (`# 안녕하세요`처럼 일반 문장 입력 케이스).
+3. **`extractCommandKeyword`** — `#`과 caret 사이의 문자열을 검색어로 추출 (공백은 무시).
+4. **`lastKeywordRef`로 가드** — 키워드가 실제로 바뀐 경우에만 선택 인덱스/스크롤 리셋. 같은 input 이벤트로 검색어가 안 바뀌었으면 굳이 리셋하지 않습니다.
+5. **위치 보정** — 텍스트가 추가되며 ‘#’의 화면 위치도 흘러내려갔을 수 있으니 매 input마다 좌표를 재계산합니다.
+
+박스가 열리는 순간에도 한 번 더 동기화가 필요합니다. 다만 이때는 “닫지는 않고” 키워드와 위치만 맞춰야 합니다.
+
+```tsx
+useEffect(() => {
+  if (!isOpened) return;
+  if (hashIndexRef.current == null) return;
+
+  updatePositionFromHashIndex();
+
+  // 오픈 직후: 닫지 말고(allowClose:false) DOM 반영 후 keyword/pos만 동기화
+  const raf1 = requestAnimationFrame(() => {
+    syncKeywordOrClose({ allowClose: false });
+
+    const raf2 = requestAnimationFrame(() => {
+      syncKeywordOrClose({ allowClose: false });
+    });
+    // ...
+  });
+
+  // cleanup 생략
+}, [isOpened, hashIndexRef, updatePositionFromHashIndex, syncKeywordOrClose]);
+```
+
+`requestAnimationFrame`을 두 번 중첩한 이유는 박스 오픈 직후의 DOM이 안정화되기까지 한 프레임으로는 부족했기 때문입니다. 첫 프레임에서는 `getTextarea`가 fallback으로 `activeElement`를 잡아 좌표가 살짝 어긋나는 케이스가 있었고, 두 번째 프레임에서 확실히 정착된 textarea로 좌표를 다시 잡아주면 어긋남이 사라졌습니다.
+
+### 4-4. document keydown 스트림으로 네비게이션 제어하기
+
+- **문자/Backspace는 input에 위임하고, document 단위 keydown 스트림에서는 네비게이션 키만 잡습니다**
+
+```tsx
+useEffect(() => {
+  if (!isOpened) return;
+
+  const sub = fromEvent<KeyboardEvent>(document, 'keydown', { capture: true }).subscribe((e) => {
+    if (e.isComposing) return;
+
+    const data = templateListQueryRef.current?.templateItems ?? [];
+    const length = data.length;
+
+    switch (e.key) {
+      case 'Backspace':                          { /* # 직후/선택에 # 포함 시 close */ }
+      case 'ArrowUp':
+      case 'ArrowDown':                          { /* 인덱스 이동 + fetchMore + scroll */ }
+      case 'Enter':                              { /* applyTemplateItem */ }
+      case 'Escape':
+      case 'ArrowLeft':
+      case 'ArrowRight':
+      case ' ':                                  { closeCommandBox(); return; }
+      default: return;
+    }
+  });
+
+  return () => sub.unsubscribe();
+}, [/* deps */]);
+```
+
+cti_connect의 contentEditable 버전과 같은 “하나의 document 단위 keydown 스트림 + switch 분기” 패턴을 그대로 적용했습니다. 단, 문자 입력은 input 이벤트가 잡고 있어 default 케이스는 단순 `return`으로 끝납니다. 같은 컨트롤러 패턴이라도 진입 텍스트 이벤트가 다르다는 게 두 버전의 차이입니다.
+
+**Backspace의 특수 처리**
+
+```tsx
+case 'Backspace': {
+  const textareaEl = getTextarea(textEditorRef);
+  const hashIndex = hashIndexRef.current;
+
+  if (textareaEl && hashIndex != null) {
+    const selectionStart = textareaEl.selectionStart ?? 0;
+    const selectionEnd = textareaEl.selectionEnd ?? 0;
+
+    const isCursorRightAfterHash =
+      selectionStart === hashIndex + 1 && selectionStart === selectionEnd;
+    const isHashInSelection = selectionStart <= hashIndex && selectionEnd > hashIndex;
+
+    if (isCursorRightAfterHash || isHashInSelection) {
+      closeCommandBox();
+      return;
+    }
+  }
+  return;
+}
+```
+
+검색어를 지우다가 caret이 # 바로 뒤까지 왔을 때(`#` 자체를 지우려는 의도) 박스를 닫습니다. 또는 사용자가 `#word`를 드래그 선택해서 백스페이스를 누르는 경우(선택 범위에 # 포함)에도 박스를 닫습니다.
+
+여기서 `e.preventDefault()`를 하지 않은 점이 중요합니다. brower default 백스페이스 동작은 그대로 두고(실제 문자를 지움), 우리는 박스 닫기만 처리합니다. 입력 변경은 다음에 발화되는 input 이벤트에서 `syncKeywordOrClose`가 한 번 더 정리하지만, 그 사이에도 박스가 더 빨리 닫혀야 사용자가 “# 지우기”의 의도를 즉시 체감합니다.
+
+**ArrowUp/Down에서 fetchMore + scroll**
+
+```tsx
+case 'ArrowUp':
+case 'ArrowDown': {
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (length === 0) return;
+
+  const prev = selectedTemplateIndexRef.current;
+  const isUp = e.key === 'ArrowUp';
+  const next = isUp ? Math.max(0, prev - 1) : Math.min(length - 1, prev + 1);
+
+  // Down + 마지막 아이템 + 다음 페이지 있음 → fetchMore
+  if (!isUp && next === length - 1 && templateListQueryRef.current?.hasNextPage) {
+    templateListQueryRef.current?.fetchMoreTemplateData?.();
+  }
+
+  selectedTemplateIndexRef.current = next;
+  setSelectedTemplateIndex(next);
+
+  adjustScrollPosition(next);
+  return;
+}
+```
+
+`hasNextPage` 가드를 한 번 더 둔 이유는 마지막 페이지에 도달했을 때 무한히 같은 요청이 반복되지 않게 하기 위함입니다. `selectedTemplateIndexRef`를 먼저 갱신하고 state도 같이 갱신해 “핸들러에서 보는 최신값”과 “렌더링에 반영되는 값”이 분기되지 않도록 했습니다.
+
+`e.stopPropagation()`은 textarea의 기본 ArrowUp/Down 동작(텍스트 라인 이동)을 막기 위함입니다. 박스가 열려 있을 때 화살표는 “리스트 항목 이동”에 완전히 소비되어야 합니다.
+
+### 4-5. 템플릿 적용과 외부 클릭 닫기
+
+- **`replaceCommandRange`로 `#keyword` 구간을 템플릿 본문으로 치환하고, queueMicrotask로 `setSelectionRange`·`resizeHeight`·`focus`를 묶어 처리합니다**
+
+Enter나 마우스 클릭으로 템플릿이 선택되면 다음 흐름을 탑니다.
+
+```tsx
+const applyTemplateItem = useCallback(
+  (item: CommandBoxTemplateItem) => {
+    const textareaEl = getTextarea(textEditorRef);
+    const hashIndex = hashIndexRef.current;
+
+    if (!textareaEl || hashIndex == null || !item) {
+      closeCommandBox();
+      return;
+    }
+
+    const caretIndex = textareaEl.selectionStart ?? textareaEl.value.length;
+    const replacement = pickMessageByLocale(item, locale);
+
+    const { nextValue, nextCaret } = replaceCommandRange({
+      value: textareaEl.value,
+      hashIndex,
+      caretIndex,
+      replacement: replacement ?? '',
+    });
+
+    onSetTextInput(nextValue);
+
+    queueMicrotask(() => {
+      const nextTa = getTextarea(textEditorRef);
+      try {
+        nextTa?.setSelectionRange(nextCaret, nextCaret);
+      } catch {
+        // ignore
+      }
+      textEditorRef.current?.resizeHeight?.();
+      textEditorRef.current?.focus?.();
+    });
+
+    closeCommandBox();
+  },
+  [closeCommandBox, hashIndexRef, locale, onSetTextInput, textEditorRef],
+);
+```
+
+`replaceCommandRange`는 단순한 문자열 슬라이스입니다.
+
+```tsx
+export const replaceCommandRange = ({ value, hashIndex, caretIndex, replacement }) => {
+  if (hashIndex < 0 || caretIndex <= hashIndex) {
+    return { nextValue: value, nextCaret: caretIndex };
+  }
+
+  const before = value.slice(0, hashIndex); // '#' 이전
+  const after = value.slice(caretIndex);    // 커서 이후
+
+  return {
+    nextValue: before + replacement + after,
+    nextCaret: before.length + replacement.length,
+  };
+};
+```
+
+`#` 이전 텍스트(`before`) + 템플릿 본문(`replacement`) + caret 이후 텍스트(`after`) 형태로 이어붙입니다. 새로운 caret은 “템플릿 본문 끝”에 두어야 사용자가 이어서 타이핑하기 자연스럽습니다.
+
+여기서 `queueMicrotask`를 한 번 끼우는 이유는, jotai store 업데이트(`onSetTextInput`)가 React 렌더링을 트리거하고 그 결과 textarea의 value가 새 값으로 바뀐 다음에야 `setSelectionRange`가 올바른 위치를 가리키기 때문입니다. 동기로 호출하면 textarea의 value가 아직 업데이트 전이라 selection이 엉뚱한 자리에 박힙니다. `resizeHeight`와 `focus`도 새 값을 기준으로 동작해야 하므로 함께 microtask에 묶었습니다.
+
+마지막으로 외부 클릭 처리입니다.
+
+```tsx
+useEffect(() => {
+  if (!isOpened) return;
+
+  const sub = fromEvent<MouseEvent>(document, 'mousedown', { capture: true }).subscribe((e) => {
+    const wrapper = commandBoxWrapperRef.current;
+    const target = e.target as Node | null;
+
+    if (!target) return;
+
+    const textareaEl = getTextarea(textEditorRef);
+    if (textareaEl && (textareaEl === target || textareaEl.contains(target))) return;
+
+    if (!wrapper) return;
+    if (wrapper.contains(target)) return;
+
+    closeCommandBox();
+  });
+
+  return () => sub.unsubscribe();
+}, [isOpened, closeCommandBox, textEditorRef]);
+```
+
+`mousedown`을 `capture: true`로 잡은 이유는 박스 내부 아이템의 click 핸들러보다 *먼저* 외부 클릭 여부를 판단해야 하기 때문입니다. 그렇지 않으면 박스 내부 클릭도 “외부 클릭” 흐름을 한 번 거치게 되어 박스가 닫혔다가 다시 열리는 깜빡임이 생깁니다.
+
+또 한 가지, textarea 자체는 외부 클릭으로 간주하지 않습니다. 사용자가 박스가 열린 상태에서 textarea를 다시 클릭하는 건 자연스러운 행동이고, 그때 박스가 닫히면 인터랙션이 끊기기 때문입니다.

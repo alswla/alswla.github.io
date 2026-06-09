@@ -13,13 +13,6 @@ const config: GatsbyConfig = {
   graphqlTypegen: true,
   jsxRuntime: "automatic",
   plugins: [
-    {
-      resolve: "gatsby-source-contentful",
-      options: {
-        accessToken: process.env.CONTENTFUL_ACCESS_TOKEN,
-        spaceId: process.env.CONTENTFUL_SPACE_ID,
-      },
-    },
     "gatsby-plugin-image",
     "gatsby-plugin-sharp",
     "gatsby-transformer-sharp",
@@ -31,7 +24,18 @@ const config: GatsbyConfig = {
         icon: "src/images/icon.png",
       },
     },
-    "gatsby-plugin-mdx",
+    {
+      resolve: "gatsby-plugin-mdx",
+      options: {
+        gatsbyRemarkPlugins: [
+          "gatsby-remark-autolink-headers",
+          {
+            resolve: "gatsby-remark-images",
+            options: { maxWidth: 1000, linkImagesToOriginal: false },
+          },
+        ],
+      },
+    },
     {
       resolve: "gatsby-plugin-google-gtag",
       options: {
@@ -57,6 +61,14 @@ const config: GatsbyConfig = {
         path: "./src/pages/",
       },
       __key: "pages",
+    },
+    {
+      resolve: "gatsby-source-filesystem",
+      options: {
+        name: "posts",
+        path: "./src/posts/",
+      },
+      __key: "posts",
     },
   ],
 }

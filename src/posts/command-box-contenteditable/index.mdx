@@ -1,0 +1,819 @@
+---
+title: 텍스트에디터에 커맨드박스 띄우기 (1) — ContentEditable
+slug: command-box-contenteditable
+date: 2026-06-07
+category:
+  - ContentEditable
+  - RxJS
+  - 텍스트에디터
+  - IME
+description: CTI SMS 템플릿 에디터를 contentEditable 기반으로 구현하며 마주친 캐럿 제어·한국어 IME·태그 단위 처리·태그 직렬화의 비대칭성을 어떻게 풀었는지에 대한 기록입니다. `Selection`/`Range` API와 ZWS 캐럿 앵커, tagParser 양방향 변환, RxJS 키보드 스트림을 중심으로 정리했습니다.
+---
+
+CTI(Computer Telephony Integration) 모듈에서 환자에게 발송할 SMS 템플릿을 편집하는 텍스트에디터를 구현하게 되었습니다. 단순한 텍스트 입력이 아니라 `##patientName##`, `##interviewLinkUser##` 처럼 발송 시점에 실제 환자 정보로 치환되는 “예약어 태그”가 본문 중간중간 끼어들어가는 구조라, 일반 `textarea`만으로는 다루기 어려운 요구사항들이 있었습니다.
+
+- **예약어 태그는 글자 단위가 아닌 “한 덩어리”로 동작해야 합니다.** 사용자가 백스페이스를 누르면 태그 전체가 사라져야 하고, 화살표 키로 옮길 때도 caret이 태그 안으로 들어가서는 안 됩니다.
+- **태그는 시각적으로 본문 텍스트와 분리되어야 합니다.** 회색 chip 형태로 렌더링되며 본문 텍스트와는 다른 스타일이 적용됩니다.
+- **커맨드박스에서 선택한 템플릿 본문은 예약어 태그가 살아있는 형태로 에디터에 그대로 삽입되어야 합니다.**
+
+`textarea`는 본질적으로 plain text를 다루는 컨트롤이라 위 요구를 만족시키려면 별도의 “가짜 태그 레이어”를 본문 위에 그려야 합니다. 반면 `contentEditable` div는 그 자체로 DOM 트리를 가지기 때문에 `<span data-tag="patientName" contenteditable="false">환자명</span>` 같은 노드를 본문 사이에 끼워넣는 것만으로 위 요구가 자연스럽게 해결됩니다.
+
+대신 `contentEditable`은 caret을 직접 다뤄야 한다는 비용을 지불해야 합니다. 이 글의 대부분은 그 비용을 어떻게 갚았는지에 대한 이야기입니다.
+
+본문에서 다루는 핵심 패턴 세 가지는 각각 다른 문제에 1:1로 대응합니다.
+
+| 문제                                               | 패턴                                                               |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| 한국어 IME 조합 중 외부 핸들러가 selection·caret을 건드려 합성이 끊김 | **IME 가드** — `compositionstart/end` + `isComposingRef`로 조합 구간 차단 |
+| 태그가 라인 끝이거나 태그끼리 인접하면 사용자가 그 자리에 caret을 둘 수 없음   | **ZWS 캐럿 앵커** — 태그 뒤 ZW textNode 삽입으로 caret이 안착할 자리 보장           |
+| 화면 표시용 태그 HTML과 서버 전송용 `##key##` 원본 문자열의 형식이 다름  | **tagParser 양방향 변환** — `toHTML`·`toBodyString`로 한 곳에서 매핑         |
+
+이 외에 커맨드박스 트리거·검색·키보드 네비게이션·붙여넣기 흐름도 함께 다루지만, 위 세 패턴이 “contentEditable 텍스트에디터를 제대로 다루기 위해 결국 지불해야 했던 비용”의 핵심입니다.
+
+## ‘#’ 입력으로 커맨드박스 띄우기
+
+- **document 단위 keydown 스트림에서 ‘#’ 키를 잡고, 현재 selection의 offset을 anchor로 저장하기**
+
+textarea 버전에서는 `onChange` 핸들러에서 `e.target.value`와 `selectionStart`를 비교해 ‘#’이 새로 들어온 자리를 추적했습니다. contentEditable에는 `e.target.value` 같은 단일 문자열이 없습니다. 대신 DOM 트리를 직접 탐색하거나 `Selection`/`Range` API로 caret의 현재 위치를 읽어야 합니다.
+
+저는 `textarea`처럼 컴포넌트의 `onInput`에서 처리하는 대신 **document 단위 keydown 스트림**에서 ‘#’ 키를 감지하는 방식을 택했습니다.
+
+```tsx
+keydownEvent$ = fromEvent<KeyboardEvent>(document, 'keydown', { capture: true }).subscribe(
+  (e) => {
+    switch (e.key) {
+      case CtiSmsTextEditorKeyBoardEventEnum.COMMAND_BOX_KEY: {
+        const commandBoxTarget = (e.target as HTMLDivElement)?.dataset;
+        if (commandBoxTarget?.preventOptionalBox) break;
+
+        setTimeout(() => {
+          cursorPositionRef.current = getCurrentOffset() - 1;
+          isSearchStart.current = true;
+          queueMicrotask(() => {
+            openCommandToolBox(cursorPositionRef.current); // # 위치 기준으로 박스 열기
+            setSearchKeywordInput('');
+            setSelectedCommandItemIndex(0);
+            getIsOpened?.(true);
+          });
+        }, 0);
+
+        break;
+      }
+      // ...
+    }
+  },
+);
+```
+
+document 단위로 올린 이유는 키보드 이벤트가 에디터뿐 아니라 커맨드박스가 열린 뒤에는 박스 자체에서도 발생할 수 있기 때문입니다. 단일 스트림에서 흐름을 통합 관리하는 게 분기가 흩어지는 것보다 더 안전했습니다.
+
+`setTimeout(0)` 안에서 `getCurrentOffset()`을 호출하는 이유는, keydown 시점에는 아직 ‘#’이 DOM에 반영되기 전이기 때문입니다. `Selection.getRangeAt(0).startOffset`은 입력이 반영된 후의 값이 필요하므로, 이벤트 루프를 한 번 양보한 다음 측정합니다.
+
+*참고로, textarea 섹션에서 언급한 것처럼 `onChange` 단계로 옮기지 않은 이유는 IME 조합·자동완성·붙여넣기 등으로 한 번의 입력 이벤트에서 여러 글자가 한 번에 바뀌는 케이스를 피하기 위함입니다. ‘#’이라는 단일 키 입력만 정확히 잡고 싶었습니다.*
+
+`cursorPositionRef.current = getCurrentOffset() - 1`로 저장한 값은 두 곳에서 다시 사용됩니다.
+
+1. **검색어 추출** — ‘#’ 이후에 사용자가 추가로 입력한 텍스트를 검색어로 잘라낼 때의 시작 offset
+2. **‘#’과 검색어 삭제** — 템플릿 선택 후 `#search`를 통째로 지울 때의 시작 offset
+
+`queueMicrotask`로 `openCommandToolBox`를 한 단계 더 늦춘 이유는 `cursorPositionRef`를 동기 설정한 뒤 박스 오픈과 포지셔닝 계산이 같은 마이크로태스크 큐 안에서 일관된 DOM 스냅샷을 보고 진행되도록 하기 위함입니다. setTimeout 단계에서 박스를 바로 열어버리면 그 사이에 다른 microtask가 끼어들어 caret 좌표가 흔들리는 케이스가 있었습니다.
+
+### 키보드이벤트로 커맨드박스 내 템플릿 조작하기 feat. RxJS
+
+- **하나의 keydown 스트림에서 switch 분기로 모든 키 이벤트를 통합 제어하기**
+
+커맨드박스가 열린 뒤에는 사용자가 키보드만으로 모든 인터랙션을 끝낼 수 있어야 합니다. 위/아래 화살표로 템플릿을 고르고, Enter로 삽입하고, Esc로 닫고, 그 사이에 추가로 글자를 입력하면 그게 검색어가 되어 리스트가 좁혀져야 합니다.
+
+이걸 각각의 이벤트 핸들러로 흩어놓으면 “어떤 상태에서 어떤 키가 어떻게 처리되어야 하는지”가 컴포넌트 전체에 퍼지게 됩니다. RxJS로 하나의 keydown 스트림을 만들고 switch로 분기하면 동일한 진입점에서 모든 인터랙션을 읽을 수 있습니다.
+
+```tsx
+keydownEvent$ = fromEvent<KeyboardEvent>(document, 'keydown', { capture: true }).subscribe((e) => {
+  const { templateData } = commandBoxOptionRef.current;
+
+  switch (e.key) {
+    case CtiSmsTextEditorKeyBoardEventEnum.COMMAND_BOX_KEY: { /* '#' 입력 → 박스 오픈 */ }
+    case CtiSmsTextEditorKeyBoardEventEnum.ESCAPE:           { resetCommandBoxState(); break; }
+    case CtiSmsTextEditorKeyBoardEventEnum.ENTER:            { /* 템플릿 삽입 */ }
+    case CtiSmsTextEditorKeyBoardEventEnum.ARROW_UP:
+    case CtiSmsTextEditorKeyBoardEventEnum.ARROW_DOWN:       { /* 인덱스 이동 + fetchMore */ }
+    case CtiSmsTextEditorKeyBoardEventEnum.ARROW_LEFT:
+    case CtiSmsTextEditorKeyBoardEventEnum.ARROW_RIGHT:      { resetCommandBoxState(); break; }
+    case CtiSmsTextEditorKeyBoardEventEnum.DATA_SPACE:       { resetCommandBoxState(); break; }
+    case CtiSmsTextEditorKeyBoardEventEnum.BACK_SPACE:       { /* 검색어 초기 상태에서는 박스 닫기 */ }
+    default:                                                 { /* 검색어 추적 */ }
+  }
+});
+```
+
+각 케이스에서 신경 쓴 포인트들을 풀어보겠습니다.
+
+**ENTER에서 isComposing 가드**
+
+한글을 조합하던 도중 Enter가 들어오면 브라우저는 “조합 확정용 Enter”로 해석합니다. 이때 우리가 박스를 닫고 템플릿을 삽입하면 사용자가 의도한 글자 확정이 사라지거나 두 번 들어가게 됩니다.
+
+```tsx
+case CtiSmsTextEditorKeyBoardEventEnum.ENTER: {
+  if (e.isComposing) return;          // 한글 조합 중 Enter는 건드리지 않음
+  if (!isCommandBoxOpened) return;    // 박스가 닫혀 있으면 에디터 기본 동작에 맡김
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  // ... 선택된 템플릿을 삽입 후 박스 닫기
+}
+```
+
+`e.stopPropagation()`을 추가한 이유는, 같은 Enter를 에디터 내부의 keydown 핸들러(`SmsTextEditor` 내부)에서도 구독하고 있어 새로운 줄 `<div>`를 만드는 동작이 있기 때문입니다. 박스가 열려 있을 때 Enter는 “템플릿 선택”으로 완전히 소비되어야 합니다.
+
+**ARROW에서 fetchMore 트리거**
+
+키보드 ↓로 마지막 아이템에 도달했을 때 자동으로 다음 페이지를 가져오게 했습니다. 사용자가 굳이 마우스로 스크롤하지 않아도 키보드만으로 끝까지 탐색할 수 있도록 하는 게 목적이었습니다.
+
+```tsx
+const nextIndex = isUp
+  ? Math.max(0, prevIndex - 1)
+  : Math.min(templateData.length - 1, prevIndex + 1);
+
+commandBoxOptionRef.current.selectedTemplateIndex = nextIndex;
+setSelectedCommandItemIndex(nextIndex);
+
+if (!isUp) {
+  const isLastItem = nextIndex + 1 === convertedCrmTemplateData.length;
+  if (isLastItem && !dataLoading) {
+    fetchMoreDataWithScroll();
+  }
+}
+
+adjustScrollPosition(nextIndex);
+```
+
+`templateData`는 `commandBoxOptionRef.current`에서 읽고 있는 점이 중요합니다. state로만 관리했다면 keydown 핸들러가 매번 재구독해야 했을 텐데, ref로 두면 핸들러는 한 번만 구독하고 내부에서 최신값을 읽어옵니다.
+
+`adjustScrollPosition`은 선택된 아이템이 리스트 viewport 안에 들어오도록 스크롤을 보정합니다. 위로 벗어나면 위로, 아래로 벗어나면 아래로 정확히 보이는 영역까지만 스크롤합니다.
+
+**default에서 검색어 추출**
+
+‘#’을 누른 뒤 사용자가 입력하는 글자는 검색어가 되어야 합니다. 이때 검색어는 `cursorPositionRef`(저장된 # 위치)부터 현재 caret offset까지의 텍스트입니다.
+
+```tsx
+default: {
+  if (isSearchStart.current) {
+    // 글자/기능키 외의 입력은 박스 닫기
+    if (
+      e.key.length !== 1 &&
+      e.key !== SHIFT_KEY &&
+      e.key !== BACK_SPACE &&
+      e.key !== CAPS_LOCK &&
+      e.key !== PROCESS
+    ) {
+      resetCommandBoxState();
+      return;
+    }
+
+    setTimeout(() => {
+      const selectRange = document.getSelection()?.getRangeAt(0).cloneRange();
+      selectRange?.setStart(selectRange.startContainer, cursorPositionRef.current ?? 0);
+      selectRange?.setEnd(selectRange.startContainer, getCurrentOffset());
+
+      setSearchKeywordInput(
+        (selectRange?.toString() ?? '')
+          .replace('#', '')
+          .replace(/\s/gi, '')
+          .replace(/&nbsp;/gi, '') ?? '',
+      );
+    }, 10);
+  }
+}
+```
+
+`Range.toString()`은 시작 offset과 끝 offset 사이의 모든 텍스트를 반환합니다. 단순히 input value를 다루는 textarea와 달리, contentEditable에서는 이 Range 방식이 훨씬 자연스럽습니다. 시작점은 박스를 열 때 저장해둔 ‘#’ 위치, 끝점은 “지금 입력이 끝난 직후의 caret”이라 그 사이를 그대로 검색어로 사용할 수 있습니다.
+
+`setTimeout(10)`을 둔 이유는 keydown 시점에는 아직 글자가 DOM에 반영되지 않았기 때문입니다. `getCurrentOffset()`이 새로 입력된 글자를 포함한 위치를 반환할 수 있도록 한 틱 늦춥니다.
+
+**Outside click / mouse mode 토글**
+
+키보드 인터랙션 외에도 마우스 관련 스트림이 두 개 더 있습니다.
+
+```tsx
+mouseClick$ = fromEvent<MouseEvent>(document, 'mouseup')
+  .pipe(
+    tap((e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      findParentAndPhrase(target, () => onClickCommandBoxItem(e));
+    }),
+    filter(
+      (e) =>
+        !!commandBoxWrapperRef.current &&
+        !commandBoxWrapperRef.current.contains(e.target as HTMLElement),
+    ),
+  )
+  .subscribe(() => resetCommandBoxState());
+```
+
+`tap`에서는 항상 실행되는 사이드이펙트(템플릿 아이템 클릭 처리), `filter`에서는 박스 외부 클릭만 통과시켜 박스 닫기로 연결했습니다. 같은 mouseup을 두 가지 의도로 동시에 다룰 수 있다는 점이 RxJS 파이프라인의 장점이 잘 드러나는 지점입니다.
+
+```tsx
+mouseMove$ = fromEvent<MouseEvent>(document, 'mousemove')
+  .pipe(throttleTime(300))
+  .subscribe(() => setIsMouseCaptured(false));
+```
+
+`isMouseCaptured`는 “지금 키보드 모드인가 마우스 모드인가”를 구분하는 상태입니다. 키보드 ↓/↑로 인덱스를 옮기면 `setIsMouseCaptured(true)`로 켜두고, 사용자가 마우스를 움직이는 순간 다시 마우스 모드로 전환합니다. 키보드로 인덱스가 바뀌었는데 마우스 위치의 hover 효과가 살아있으면 어색해 보이기 때문입니다.
+
+**스크롤 무한 페이징**
+
+```tsx
+scroll$ = fromEvent(commandBoxListRef.current, 'scroll')
+  .pipe(
+    filter(() => eventOn),
+    map((e) => {
+      const target = e.target as HTMLDivElement;
+      return {
+        scrollHeight: target.scrollHeight,
+        scrollTop: target.scrollTop,
+        clientHeight: target.clientHeight,
+      };
+    }),
+    startWith({ /* 초기값 */ }),
+    pairwise(),
+    filter(
+      (positions) =>
+        isUserScrollingDown(positions) &&
+        isScrollExpectedPercent(positions[1], SCROLL_THRESHOLD) &&
+        !dataLoading,
+    ),
+  )
+  .subscribe(() => fetchMoreDataWithScroll());
+```
+
+`pairwise()`로 이전 스크롤 위치와 현재 위치를 묶어 비교했습니다. 단순히 “95% 이상 스크롤”만 보면 사용자가 위로 올렸다가 다시 같은 위치로 돌아왔을 때 fetchMore가 또 실행될 수 있습니다. `isUserScrollingDown(positions)`로 “직전 프레임 대비 아래로 내려가는 중”인 케이스만 통과시켜 중복 호출을 막았습니다.
+
+## 템플릿 선택시 텍스트에디터에 내용 붙여넣기
+
+- **저장한 Range를 복원해 정확한 위치에 노드를 삽입하고, `##key##`는 살아있는 태그 노드로 변환하기**
+
+사용자가 템플릿을 선택하면 두 가지가 일어나야 합니다.
+
+1. ‘#’과 그 뒤 검색어가 통째로 사라져야 합니다.
+2. 선택된 템플릿의 본문이 그 자리에 삽입되어야 합니다. 본문 안의 `##patientName##` 같은 예약어는 회색 chip 형태의 태그 노드로 렌더링되어야 합니다.
+
+```tsx
+paste(content, interviewName, interviewId) {
+  if (!editorRef.current) return;
+
+  if (!savedRangeRef.current) {
+    caretUtils.moveToEnd(editorRef.current);
+    caretUtils.save(savedRangeRef);
+  }
+
+  caretUtils.restore(savedRangeRef);
+
+  const nodes = tagParser.toNodeList(content, templateParameters, interviewName, interviewId);
+  nodes.forEach((node) => insertHTMLAtRange(node, savedRangeRef));
+
+  queueMicrotask(() => {
+    const editorEl = editorRef.current;
+    if (!editorEl) return;
+
+    caretUtils.moveToEnd(editorEl);
+    caretUtils.save(savedRangeRef);
+
+    const scrollContainer = findScrollContainer(editorEl);
+    if (scrollContainer) {
+      scrollToBottomSmooth(scrollContainer);
+    } else {
+      editorEl.scrollIntoView({ block: 'end', behavior: 'auto' });
+    }
+  });
+}
+```
+
+`savedRangeRef`는 사용자가 마지막으로 caret을 두었던 Range입니다. 박스가 열리고 사용자가 마우스로 템플릿을 클릭하는 동안 에디터는 포커스를 잃기 때문에, 미리 저장해둔 Range를 복원해서 “원래 ‘#’이 있던 자리”로 caret을 되돌립니다.
+
+‘#’과 검색어를 지우는 건 박스를 열 때 저장한 `cursorPositionRef`를 활용합니다.
+
+```tsx
+const deleteCommendAndSearchText = () => {
+  const selection = window.getSelection();
+  const range = selection.getRangeAt(0);
+
+  if (range.startContainer.nodeType === Node.TEXT_NODE) {
+    const nodeLength = range.startContainer.textContent?.length ?? 0;
+    const hashIndex = cursorPositionRef.current;
+    if (hashIndex < 0 || hashIndex >= nodeLength) return;
+
+    const currentOffset = getCurrentOffset();
+    const startOffset = Math.max(0, hashIndex);
+    const endOffset = Math.max(startOffset, Math.min(nodeLength, currentOffset));
+
+    range.setStart(range.startContainer, startOffset);
+    range.setEnd(range.startContainer, endOffset);
+    range.deleteContents();
+  }
+};
+```
+
+`range.setStart` / `range.setEnd`로 ‘#’ 위치부터 현재 caret까지 잡고 `deleteContents()`로 한 번에 삭제합니다. textarea처럼 문자열을 잘라 다시 set하지 않아도 되는 게 contentEditable + Range API의 장점입니다.
+
+삽입 후에는 `moveToEnd`로 caret을 본문 끝으로 옮기고 `scrollToBottomSmooth`로 네 프레임에 걸쳐 반복 스크롤합니다. 한 번만 호출하면 아직 새로 삽입된 노드의 레이아웃이 잡히기 전이라 스크롤이 부족하게 적용되는 케이스가 있었습니다.
+
+```tsx
+function scrollToBottomSmooth(container: HTMLElement, repeat: number = 4) {
+  let count = 0;
+  const tick = () => {
+    container.scrollTop = container.scrollHeight;
+    if (count++ < repeat) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+```
+
+### 템플릿 컨텐츠 파싱하기
+
+- **`##key##` ↔ `<span data-tag="key" contenteditable="false">label</span>` 양방향 변환과 직렬화의 비대칭성 다루기**
+
+템플릿 본문은 서버에 plain text + `##key##` 형태로 저장됩니다. 예를 들면 이런 형식입니다.
+
+```
+안녕하세요, ##patientName## 님.
+오늘 ##appointmentDate##에 예약된 진료 안내드립니다.
+```
+
+에디터에 표시할 때는 이걸 HTML로 풀어야 하고, 저장할 때는 다시 plain text + `##key##`로 되돌려야 합니다. 이 변환을 `tagParser`로 모았습니다.
+
+**toHTML — 직렬화된 본문을 DOM으로**
+
+```tsx
+toHTML(body, templateParameters, interviewName, interviewId): string {
+  if (!body) return '';
+
+  const lines = body.split('\n');
+  let withDivs = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === '' && i === lines.length - 1) break;
+    withDivs += line ? `<div>${line}</div>` : '<div><br></div>';
+  }
+
+  if (!withDivs) withDivs = '<div><br></div>';
+
+  withDivs = withDivs.replace(/##([^#]+)##/g, (_, key) => {
+    const param = templateParameters.find((p) => p.key === key);
+    let label = param ? param.fieldName : key;
+
+    if (key === 'interviewLinkUser' && interviewName?.trim()) {
+      const fieldName = param?.fieldName ?? '사용자 문진 링크';
+      label = `${fieldName} (${interviewName})`;
+    }
+
+    let interviewIdAttr = '';
+    if (key === 'interviewLinkUser' && interviewId != null) {
+      const escapedInterviewId = String(interviewId).replace(/"/g, '&quot;');
+      interviewIdAttr = ` data-interview-id="${escapedInterviewId}"`;
+    }
+
+    return `<span data-tag="${key}" class="reserved-word-tag" contenteditable="false"${interviewIdAttr}>${label}</span>`;
+  });
+
+  return withDivs;
+}
+```
+
+여기서 가장 중요한 attribute는 **`contenteditable="false"`** 입니다. 이 한 줄 덕분에 사용자가 태그 내부 글자를 클릭해도 caret이 진입하지 못하고, IME 조합도 시작되지 않습니다. “글자 단위가 아닌 한 덩어리”라는 요구사항의 절반 이상이 이 attribute로 해결됩니다. (나머지 절반은 backspace와 arrow 키 처리에서 다룹니다.)
+
+`interviewLinkUser`는 환자별 문진 링크라 단순 치환이 아니라 `interviewId`를 함께 보존해야 합니다. `data-interview-id` attribute에 담아두면 toBodyString으로 역변환할 때도, 발송 시점에 실제 링크를 만들 때도 같은 attribute를 참조할 수 있습니다.
+
+**toBodyString — DOM을 직렬화**
+
+```tsx
+toBodyString(html: string): string {
+  const div = document.createElement('div');
+  div.innerHTML = html;
+
+  div.querySelectorAll('span[data-tag]').forEach((tag) => {
+    const key = tag.getAttribute('data-tag')!;
+    tag.replaceWith(`##${key}##`);
+  });
+
+  div.querySelectorAll('span.tag-gap').forEach((gap) => gap.remove());
+
+  let result = div.innerHTML.replace(/&nbsp;/g, ' ');
+  result = result.replace(/<br\s*\/?>/gi, '');
+  result = result.replace(/<\/div>/g, '');
+  result = result.replace(/<div>/g, '\n');
+  result = result.replace(/​/g, '');
+  result = result.replace(/\n$/, '');
+  result = decodeHtmlEntities(result);
+
+  return result;
+}
+```
+
+역변환은 단순히 정규식의 반대방향이 아닙니다. 브라우저가 contentEditable에 자동으로 끼워넣는 부가적인 문자/엔티티들을 모두 청소해야 합니다.
+
+- **`&nbsp;` → 공백** : contentEditable은 연속 공백이나 줄 끝 공백을 `&nbsp;`로 정규화합니다.
+- **`<br>` 제거 + `</div>` 제거 + `<div>` → `\n`** : 줄바꿈을 위해 만든 `<div>` 래퍼와 빈 줄 표시용 `<br>`을 줄바꿈 문자로 환원합니다.
+- **ZW 제거** : caret anchor용으로 의도적으로 넣은 Zero Width Space는 사용자 입력이 아니므로 직렬화에서 빠집니다.
+- **마지막 개행 제거 + HTML 엔티티 디코딩** : `<div>` 변환 부산물과 `&amp;` 같은 엔티티를 정리합니다.
+
+이 토큰 청소 순서를 한 번이라도 바꾸면 직렬화 결과가 달라집니다. 예를 들어 `<div>` 치환을 `<br>` 제거보다 먼저 하면 빈 줄이 두 번씩 들어가는 케이스가 생깁니다. 정규식 순서 자체가 의미를 갖는 코드라 주석으로 의도를 남겨두었습니다.
+
+**저장 시점의 비대칭성 보정**
+
+저장 함수에서는 한 가지 더 보정을 했습니다.
+
+```tsx
+save() {
+  const el = editorRef.current;
+  if (!el) return '';
+
+  const html = el.innerHTML ?? '';
+  const body = tagParser.toBodyString(html);
+
+  // DOM의 첫 줄(div)에 내용이 있는데도 body가 \n으로 시작하면
+  // tagParser 직렬화 과정에서 "선두 개행"이 붙는 부작용으로 보고 제거한다.
+  const first = el.firstElementChild as HTMLElement | null;
+  const firstLineHasContent =
+    !!first &&
+    ((first.textContent ?? '').replaceAll(ZW, '').trim() !== '' ||
+      !!first.querySelector('span[data-tag]'));
+
+  if (firstLineHasContent && body.startsWith('\n')) {
+    return body.replace(/^\n+/, '');
+  }
+
+  return body;
+}
+```
+
+`<div>` → `\n` 치환은 모든 div 앞에 개행을 붙입니다. 그런데 실제 첫 줄에 콘텐츠가 있는 경우 결과 문자열이 `\n`으로 시작하는 부작용이 생깁니다. “DOM 상으로는 첫 줄에 내용이 있는데 직렬화에는 선두 개행이 붙는다” — 이건 사용자 의도와 어긋나므로 첫 줄에 콘텐츠가 있는데 body가 `\n`으로 시작하면 그 선두 개행을 제거합니다.
+
+처음에는 `tagParser`의 비대칭성을 정규식 순서로 풀려 했더니 다른 케이스에서 또 깨지는 식의 시도가 반복되어, 결국 “직렬화 결과를 후처리하는” 형태로 정착했습니다.
+
+## 텍스트에디터에서 backSpace로 지울때 태그단위 처리하기
+
+- **`Backspace` keydown에서 caret 바로 앞이 `span[data-tag]`인지 확인하고, 맞으면 노드 전체를 한 번에 제거하기**
+
+`contenteditable="false"` 덕분에 태그 *내부*로는 caret이 들어가지 않습니다. 하지만 태그 *바로 앞*에서 백스페이스를 누르면 브라우저는 기본적으로 “태그 안의 마지막 글자 하나를 지운다”고 해석하려 합니다. 결과적으로 태그가 한 글자씩 깨지면서 사라지거나, 어떤 브라우저에서는 태그가 일부 텍스트 노드로 풀려서 절반은 chip, 절반은 일반 텍스트가 되는 기괴한 상태가 만들어집니다.
+
+해결책은 brower default를 막고 “태그면 통째로 지운다”는 동작을 직접 구현하는 것입니다.
+
+```tsx
+if (e.key === 'Backspace') {
+  const range = sel.getRangeAt(0);
+  const node = range.startContainer;
+  const offset = range.startOffset;
+
+  // caret이 텍스트 노드의 맨 앞 + 직전 형제가 태그
+  if (node.nodeType === Node.TEXT_NODE && offset === 0) {
+    const prev = node.previousSibling;
+    if (prev instanceof HTMLElement && prev.matches('span[data-tag]')) {
+      e.preventDefault();
+      prev.remove();
+      caretUtils.save(savedRangeRef);
+      return;
+    }
+  } else if (node.nodeType === Node.ELEMENT_NODE) {
+    // caret이 element 시작 + 직전 형제가 태그 (Chrome 일부 케이스)
+    const prev = (node as Element).previousSibling;
+    if (prev instanceof HTMLElement && prev.matches('span[data-tag]')) {
+      e.preventDefault();
+      prev.remove();
+      caretUtils.save(savedRangeRef);
+      return;
+    }
+  }
+}
+```
+
+두 분기가 있는 이유는 caret이 떨어지는 위치에 따라 `range.startContainer`의 nodeType이 달라지기 때문입니다.
+
+- **TEXT_NODE + offset === 0** : “텍스트 노드의 맨 앞”입니다. 직전 형제가 태그면 그 태그가 사용자 시각으로 “바로 앞”에 있는 노드입니다.
+- **ELEMENT_NODE** : Chrome이 가끔 caret을 텍스트 노드가 아닌 부모 ELEMENT의 어떤 자식 사이로 떨어뜨립니다. 이때도 직전 형제를 확인해야 합니다.
+
+`e.preventDefault()`로 brower default 백스페이스를 막은 다음 `prev.remove()`로 태그 노드 전체를 DOM에서 떼어냅니다. `caretUtils.save(savedRangeRef)`로 새로운 caret 위치를 저장해두면 다음 인터랙션(예: 추가 템플릿 삽입)에서 같은 자리로 복원할 수 있습니다.
+
+이 처리는 “태그가 한 덩어리로 행동한다”는 사용자 멘탈 모델을 지키는 핵심 부분입니다. 한 글자씩 사라지는 경험은 작은 디테일 같지만 한 번 깨지면 사용자가 신뢰를 잃습니다.
+
+### Caret 어디까지 활용해봤니
+
+- **save/restore부터 ZW anchor 삽입, 라인 단위 보정까지 — caret을 직접 옮길 수 있는 만큼 옮겨봤습니다**
+
+contentEditable에서 caret을 다루는 일은 단순히 “Selection을 잡고 setStart/setEnd”로 끝나지 않습니다. 브라우저마다 caret이 떨어지는 노드가 다르고, “보이지 않지만 있어야 하는” 텍스트 노드도 필요합니다. caret 관련 로직을 `caretUtils`로 분리해서 한 모듈에서 관리했습니다.
+
+**가장 기본: save / restore**
+
+```tsx
+save(savedRangeRef: RefObject<Range | null>): void {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  savedRangeRef.current = sel.getRangeAt(0).cloneRange();
+},
+
+restore(savedRangeRef: RefObject<Range | null>): void {
+  const range = savedRangeRef.current;
+  if (!range) return;
+  const sel = window.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
+},
+```
+
+박스가 열릴 때 caret을 저장하고, 박스가 닫히면서 템플릿을 삽입할 때 복원합니다. `cloneRange()`를 호출하는 이유는 `Selection.getRangeAt`이 살아있는 객체를 반환하기 때문에, 다음 selection 변경이 그 객체에 반영되어 저장 의미가 사라지기 때문입니다.
+
+**ZW Trick: moveAfter에서 caret anchor 보장**
+
+```tsx
+moveAfter(element: HTMLElement): void {
+  const sel = window.getSelection();
+  if (!sel) return;
+
+  const parent = element.parentNode;
+  if (!parent) return;
+
+  // 뒤에 아무 노드도 없으면 caret anchor용 ZW 삽입
+  if (!element.nextSibling) {
+    parent.appendChild(document.createTextNode(ZW));
+  }
+
+  const range = document.createRange();
+  range.setStartAfter(element);
+  range.collapse(true);
+
+  sel.removeAllRanges();
+  sel.addRange(range);
+},
+```
+
+핵심은 `if (!element.nextSibling) parent.appendChild(document.createTextNode(ZW))` 부분입니다.
+
+태그가 라인의 마지막 자식인 경우, caret이 태그 뒤로 가야 하는데 뒤에 텍스트 노드가 없으면 brower가 caret을 표시할 anchor가 없습니다. 결과적으로 caret이 보이지 않거나, 다음 라인의 시작으로 jump해버립니다. 이때 길이 0의 텍스트 노드(U+200B, Zero Width Space)를 끼워주면 사용자 눈에는 보이지 않으면서 caret이 안정적으로 안착할 수 있는 공간이 생깁니다.
+
+ZW는 toBodyString에서 직렬화할 때 제거되므로 사용자가 저장한 콘텐츠에는 영향이 없습니다. 사용자 입장에선 “그냥 자연스럽게 caret이 보이는” 것만 경험하지만, 그 뒤에서는 textNode 하나가 묵묵히 anchor 역할을 하고 있습니다.
+
+**그럼 `moveBefore`에는 왜 ZW를 넣지 않았을까요?**
+
+`moveBefore`가 호출되는 시나리오를 보면 그 이유가 보입니다. ArrowLeft로 태그 앞으로 이동하거나, 태그 내부에서 빠져나갈 때 `moveBefore`가 호출되는데, 이런 호출이 발생하려면 그 *앞에 이미 다른 노드가 존재한다*는 전제가 깔려 있습니다. 사용자가 caret을 옮기는 액션이 이미 발생했다는 건 그 앞쪽 anchor가 이미 마련되어 있다는 뜻입니다.
+
+여기에 두 가지 구조적 이유가 더 있습니다.
+
+- **줄 자체가 line-start anchor 역할을 합니다.** 이 에디터는 모든 줄을 `<div>...</div>`로 감쌉니다. 태그가 줄의 첫 자식이라도 div가 부모로서 caret을 받아들일 수 있어, “태그 앞 ZW”가 없어도 줄 첫 위치에는 caret이 자리 잡을 수 있습니다. (Chrome이 가끔 startContainer를 root로 떨어뜨리는 edge case는 `resolveLineDiv`로 보정합니다.)
+- **새 줄 생성 시점에 항상 ZW가 먼저 들어갑니다.** Enter 핸들러는 새 div를 만들면서 첫 자식으로 `document.createTextNode(ZW)`를 채워둡니다. 이후 그 줄에 태그가 삽입되면 자연스럽게 “태그 앞에 텍스트노드”가 만들어지므로, “줄 첫 부분에 anchor가 없는 태그”라는 상황이 애초에 발생하지 않습니다.
+
+즉 caret이 머무는 자연 위치는 항상 “글자/태그의 뒤”라는 인터랙션 가정 위에서 설계되어 있고, “앞” 쪽 anchor는 줄 구조·새 줄 생성 시 textNode·기존 텍스트 흐름이 이미 제공하고 있어 별도 ZW가 필요 없었습니다.
+
+**Arrow 키로 태그 단위 점프**
+
+```tsx
+if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+  const tagEl = caretUtils.getTagAtCaret(node);
+  if (tagEl) {
+    e.preventDefault();
+    if (e.key === 'ArrowRight') caretUtils.moveAfter(tagEl);
+    else caretUtils.moveBefore(tagEl);
+    caretUtils.save(savedRangeRef);
+    return;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const textLen = node.textContent?.length ?? 0;
+
+    if (offset === 0 && e.key === 'ArrowLeft') {
+      const prev = node.previousSibling;
+      if (prev instanceof HTMLElement && prev.matches('span[data-tag]')) {
+        e.preventDefault();
+        caretUtils.moveBefore(prev);
+        return;
+      }
+    }
+    if (offset === textLen && e.key === 'ArrowRight') {
+      const next = node.nextSibling;
+      if (next instanceof HTMLElement && next.matches('span[data-tag]')) {
+        e.preventDefault();
+        caretUtils.moveAfter(next);
+        return;
+      }
+    }
+  }
+  // ELEMENT_NODE 분기도 동일한 패턴으로 처리
+}
+```
+
+`getTagAtCaret`은 caret이 태그 *안에* 있는지(`contenteditable="false"`에도 불구하고 일부 케이스에서 들어가는 경우)를 확인합니다. 안에 있으면 무조건 태그 밖으로 밀어냅니다.
+
+caret이 태그 *옆에* 있을 때는 한 번의 화살표 키로 태그 전체를 건너뛰게 합니다. brower default 동작은 “한 글자씩”이라 태그 안 라벨 글자를 가로지르며 들어갔다 나오는 모습이 됩니다. 태그가 한 덩어리로 행동해야 한다는 모델을 여기서도 지킵니다.
+
+**ArrowUp/Down + 라인 보정**
+
+```tsx
+function resolveLineDiv(root: HTMLElement, range: Range): HTMLDivElement | null {
+  let node: Node = range.startContainer;
+
+  // Chrome이 root로 잡아버리는 케이스 보정
+  if (node === root) {
+    const i = Math.min(range.startOffset, root.childNodes.length - 1);
+    node = root.childNodes[i] ?? root.childNodes[i - 1] ?? root;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) node = node.parentNode as Node;
+
+  let el = node as HTMLElement | null;
+  if (!el) return null;
+
+  // root 바로 아래 div까지 끌어올리기
+  while (el && el !== root && el.parentElement !== root) {
+    el = el.parentElement;
+  }
+
+  if (el && el.parentElement === root && el.tagName === 'DIV') return el as HTMLDivElement;
+  return null;
+}
+```
+
+Chrome은 caret이 어떤 줄의 첫 칸에 있을 때 가끔 `range.startContainer`를 에디터 root로 떨어뜨립니다. 이때 곧이곧대로 부모를 타고 올라가면 “현재 라인”을 잡을 수 없습니다. `startOffset`을 보고 가장 가까운 자식 div로 보정해야 안정적입니다.
+
+```tsx
+function getLastTagIfTagOnlyLine(line: HTMLElement): HTMLElement | null {
+  if (line.tagName !== 'DIV') return null;
+
+  const onlyTagLine = Array.from(line.childNodes).every((n) => {
+    if (n.nodeType === Node.TEXT_NODE) {
+      const t = (n.textContent ?? '').replaceAll(ZW, '').trim();
+      return t === '';
+    }
+    if (n.nodeType === Node.ELEMENT_NODE) {
+      const h = n as HTMLElement;
+      return h.tagName === 'BR' || h.matches('span[data-tag]');
+    }
+    return true;
+  });
+
+  if (!onlyTagLine) return null;
+
+  const tags = line.querySelectorAll('span[data-tag]');
+  return tags.length ? (tags[tags.length - 1] as HTMLElement) : null;
+}
+```
+
+위/아래 라인이 “태그만 있는 줄”이면, ArrowUp/Down 시 brower가 caret을 어디에 떨어뜨릴지 일정하지 않습니다. 어떤 브라우저는 태그 앞으로, 어떤 브라우저는 태그 뒤로, 가끔은 라인 자체를 건너뜁니다. 이 함수로 “태그만 있는 줄”을 식별하고, 직접 `moveAfter(lastTag)`로 caret을 명확히 태그 뒤에 두면 사용자 경험이 일관됩니다.
+
+```tsx
+if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+  const range = sel.getRangeAt(0);
+  const currentLine = resolveLineDiv(el, range);
+
+  if (currentLine) {
+    const target =
+      e.key === 'ArrowUp'
+        ? currentLine.previousElementSibling
+        : currentLine.nextElementSibling;
+
+    if (target instanceof HTMLElement) {
+      const lastTag = getLastTagIfTagOnlyLine(target);
+      if (lastTag) {
+        e.preventDefault();
+        caretUtils.moveAfter(lastTag);
+        caretUtils.save(savedRangeRef);
+        queueMicrotask(() => lastTag.scrollIntoView({ block: 'nearest' }));
+        return;
+      }
+    }
+  }
+}
+```
+
+## 한국어 IME 조합 안정성 확보하기
+
+- **`compositionstart/end`로 조합 구간을 추적하고 `e.isComposing`을 한 번 더 가드해, 합성 중인 키 이벤트가 우리쪽 핸들러로 새는 걸 막기**
+
+한국어 IME 환경에서 사용자가 “ㄱ” → “가” → “각” 처럼 한 글자를 조합하는 동안에는 키 이벤트의 의미가 평상시와 다릅니다.
+
+- **Enter** : “조합 확정”으로 해석됩니다. 우리가 박스를 닫거나 새 줄을 만들면 확정이 사라지거나 두 번 들어갑니다.
+- **Backspace** : “조합 취소”로 해석됩니다. 우리가 태그 삭제 로직을 돌리면 사용자가 의도한 한 글자가 통째로 사라집니다.
+- **ArrowUp/Down** : 일부 브라우저에서 자동완성 후보 이동에 사용됩니다. 우리가 가로채면 후보 선택이 막힙니다.
+
+이런 키 이벤트가 우리쪽 핸들러로 그대로 새면 합성이 미완료 상태로 끊겨 임시 글자가 누락됩니다. 이걸 막기 위해 합성 구간을 두 단계로 가드했습니다.
+
+```tsx
+/** compositionstart (조합 시작) */
+subs.push(
+  fromEvent<CompositionEvent>(el, 'compositionstart').subscribe(() => {
+    isComposingRef.current = true;
+  }),
+);
+
+/** compositionend (조합 완료) */
+subs.push(
+  fromEvent<CompositionEvent>(el, 'compositionend').subscribe(() => {
+    isComposingRef.current = false;
+    caretUtils.save(savedRangeRef);
+    onInput?.();
+  }),
+);
+```
+
+`compositionstart` ↔ `compositionend` 사이가 IME 조합 구간입니다. 이 구간을 `isComposingRef`로 기록해두면 keydown 핸들러에서 가드할 수 있습니다.
+
+```tsx
+if (e.key === 'Enter') {
+  if (e.isComposing || isComposingRef.current) {
+    return;  // 조합 중인 Enter는 건드리지 않음
+  }
+  // 평상시 Enter 처리
+}
+```
+
+`e.isComposing`(브라우저가 직접 알려주는 합성 여부)과 `isComposingRef.current`(우리가 직접 추적한 값)를 모두 확인합니다. 둘이 일치하지 않는 미세한 타이밍 케이스가 실제로 있어서, 한 쪽만 보면 가끔 가드를 우회하는 키 이벤트가 통과합니다. 두 값을 동시에 확인하는 게 가장 안정적이었습니다.
+
+같은 가드를 커맨드박스 컨테이너의 document keydown 스트림에도 두었습니다.
+
+```tsx
+keydownEvent$ = fromEvent<KeyboardEvent>(document, 'keydown', { capture: true }).subscribe((e) => {
+  // ENTER 케이스 안에서:
+  if (e.isComposing) return;
+  // ...
+});
+```
+
+한국어 입력은 모든 사용자가 매일 마주치는 경로라, 이 가드 한 줄이 빠지면 사용자가 한 줄을 칠 때마다 작은 오작동이 누적되는 형태로 체감됩니다. 가장 짧은 코드인데 가장 자주 작동하는 안전판입니다.
+
+## 최적화를 해보자
+
+지금까지의 인터랙션이 다 동작한다고 해서 끝이 아니었습니다. CTI 통화 중에 SMS를 작성하는 시나리오 특성상, 사용자가 빠르게 타이핑하고 곧장 발송하는 흐름이 잦았습니다. 작은 lag도 통화 흐름을 깨뜨려서 체감되는 부분들이 컸습니다.
+
+**ref와 state를 의도적으로 이중화**
+
+```tsx
+const [selectedCommandItemIndex, setSelectedCommandItemIndex] = useState<number>(0);
+const commandBoxOptionRef = useRef<CtiSmsTemplateCommandBoxProps>({
+  selectedTemplateIndex: 0,
+  templateData: [],
+});
+```
+
+선택된 인덱스는 state와 ref에 동시에 둡니다.
+
+- **state는 UI 렌더링용** : 어떤 아이템이 강조될지 결정하기 위해 리렌더링이 필요합니다.
+- **ref는 RxJS 핸들러용** : keydown 스트림은 컴포넌트 라이프사이클 동안 한 번만 구독되어야 합니다. state를 직접 참조하면 클로저에 갇혀 stale value가 들어옵니다. ref로 두면 핸들러는 항상 최신값을 봅니다.
+
+같은 데이터를 두 곳에 두는 건 보통 안티패턴으로 분류되지만, RxJS 스트림과 React 렌더링이 만나는 지점에서는 의도적인 분리가 더 안전했습니다. 구독을 effect 의존성에 매번 다시 거는 건 비용이 크고, 재구독 사이에 들어온 키 이벤트가 잠깐 누락되는 케이스도 생깁니다.
+
+**검색어 debounce 300ms**
+
+```tsx
+const debouncedSearch = useMemo(
+  () =>
+    debounce((keyword: string | undefined) => {
+      search(keyword);
+    }, 300),
+  [search],
+);
+
+useEffect(() => {
+  debouncedSearch(searchKeywordInput);
+  return () => debouncedSearch.cancel();
+}, [searchKeywordInput, debouncedSearch]);
+```
+
+사용자가 검색어를 한 글자씩 입력할 때마다 네트워크 요청을 보내면 부담이 큽니다. 300ms debounce로 “타이핑이 잠깐 멈춘 시점”만 잡았습니다. cleanup에서 `cancel()`을 호출해 컴포넌트 언마운트 시 보류된 호출이 새지 않게 했습니다.
+
+**throttleTime으로 마우스 모드 전환**
+
+```tsx
+mouseMove$ = fromEvent<MouseEvent>(document, 'mousemove')
+  .pipe(throttleTime(300))
+  .subscribe(() => setIsMouseCaptured(false));
+```
+
+마우스 움직임은 매우 빈번한 이벤트입니다. 키보드 모드 ↔ 마우스 모드를 토글하는 데 60Hz로 set state를 호출할 이유가 없어 300ms throttle을 걸었습니다.
+
+**스크롤 페이징 중복 호출 방지**
+
+`pairwise()` + `isUserScrollingDown` 패턴은 위에서 다뤘으니 짧게만 짚으면, “한 번 95%를 지났다고 매번 fetchMore가 호출되는” 케이스를 막기 위함이었습니다. 사용자가 위로 스크롤했다가 다시 같은 위치로 돌아오는 경우에도 중복 호출이 나지 않습니다.
+
+**queueMicrotask로 DOM mutation 직후 안정화**
+
+```tsx
+setTimeout(() => {
+  cursorPositionRef.current = getCurrentOffset() - 1;
+  queueMicrotask(() => {
+    openCommandToolBox(cursorPositionRef.current);
+  });
+}, 0);
+```
+
+```tsx
+queueMicrotask(() => {
+  caretUtils.moveToEnd(editorEl);
+  scrollToBottomSmooth(scrollContainer);
+});
+```
+
+`queueMicrotask`로 한 단계 늦추는 패턴이 코드 전반에 흩어져 있습니다. caret 위치 측정, 박스 포지셔닝, 스크롤 보정 같은 DOM 의존 작업은 직전 mutation의 layout이 잡힌 다음에 실행되어야 일관된 결과가 나옵니다. `setTimeout(0)`은 macrotask라 너무 늦고, 동기 실행은 너무 이릅니다. microtask가 그 중간 지점입니다.
+
+**`contenteditable="false"`로 caret 진입 자체 차단**
+
+성능 최적화는 아니지만 “이걸 안 했으면 처리 분기가 두 배는 됐을” 안전판입니다. 태그 노드 자체에 이 속성을 박아두면 IME 시작, 글자 진입, 부분 선택 같은 케이스가 처음부터 일어나지 않습니다. backspace/arrow/up-down 로직이 잘 정리될 수 있던 것도 결국 caret이 태그 안에 들어가지 못한다는 가정 위에서 작성되었기 때문입니다.
