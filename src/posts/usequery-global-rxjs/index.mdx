@@ -39,19 +39,6 @@ export const usePatientLocationStateApplication = () => {
     },
   })
 }
-
-gql`
-  query GetStateTagWithRuleSetting(
-    $ruleSetting: EPatientLocationInfoRuleSetting!
-  ) {
-    patient {
-      getStateTagWithRuleSetting(ruleSetting: $ruleSetting) {
-        id
-        color
-      }
-    }
-  }
-`
 ```
 
 `BehaviorSubject`를 고른 이유는 두 가지입니다.

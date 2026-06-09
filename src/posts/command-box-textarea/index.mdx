@@ -135,7 +135,6 @@ const onChangeTextInput = (e: ChangeEvent<HTMLTextAreaElement>) => {
 하지만, 문자열 길이로 트리거 여부를 판단하게 되었을 때 아래 문제가 발생할 수 있습니다.
 
 > **길이 비교 방식의 한계**
->
 > - abc 에서 b를 드래그하여 #을 입력하는 경우
 >   - prev: “abc” (length: 3)
 >   - next: “a#c” (length: 3)
@@ -423,32 +422,21 @@ export function CommandBoxList({
 ```
 
 > **왜 hook이 아닌 ref를 사용해 api를 등록했을까?**
->
 > 이건 “상태를 재사용하는 훅” 문제가 아니라, 하위 컴포넌트가 제공하는 동적 기능을 상위 이벤트 시스템에 ‘등록(register)’하는 문제였기 때문에 hook보다 ref + useEffect가 맞았습니다.
->
 > React hook은 기본적으로
->
 > - **자기 내부 상태를 관리**하거나
 > - **외부 시스템을 구독**하거나
 > - **재사용 가능한 로직**을 캡슐화
->
 > 하는 용도로 보통 아래와 같은 형태로 사용되며, 호출한 쪽이 주도권을 가집니다.
->
 > ```tsx
 > const { data, fetchMore } = useSomething()
 > ```
->
 > 하지만, 현재 구조에서는 주도권이 반대입니다.
->
 > 지금 구조에서는:
->
 > - 데이터 로딩 로직 → `CommandBoxList` (하위)
 > - 이벤트 트리거 → 상위 (키보드, 스크롤)
->
 > 즉, “하위가 기능을 만들어서, 상위에 제공해야 하는 구조”로, 이걸 hook으로 만들면 자연스럽지 않습니다.
->
 > 또한 hook으로 만들면 상위가 데이터쿼리, 검색상태, fetch를 직접 소유하게되는 문제 외에도 Suspense boundary가 깨지며 키보드 이벤트에도 영향이 미칠 수 있습니다.
->
 > - 상위에서 `useSuspenseQuery` 호출
 > - 상위 전체가 suspend
 
