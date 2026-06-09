@@ -770,9 +770,7 @@ useEffect(
 
 cti_connect의 contentEditable 버전과 같은 “하나의 document 단위 keydown 스트림 + switch 분기” 패턴을 그대로 적용했습니다. 단, 문자 입력은 input 이벤트가 잡고 있어 default 케이스는 단순 `return`으로 끝납니다. 같은 컨트롤러 패턴이라도 진입 텍스트 이벤트가 다르다는 게 두 버전의 차이입니다.
 
-**Backspace의 특수 처리**
-
-```tsx
+#### Backspace의 특수 처리```tsx
 case 'Backspace': {
   const textareaEl = getTextarea(textEditorRef);
   const hashIndex = hashIndexRef.current;
@@ -798,9 +796,7 @@ case 'Backspace': {
 
 여기서 `e.preventDefault()`를 하지 않은 점이 중요합니다. brower default 백스페이스 동작은 그대로 두고(실제 문자를 지움), 우리는 박스 닫기만 처리합니다. 입력 변경은 다음에 발화되는 input 이벤트에서 `syncKeywordOrClose`가 한 번 더 정리하지만, 그 사이에도 박스가 더 빨리 닫혀야 사용자가 “# 지우기”의 의도를 즉시 체감합니다.
 
-**ArrowUp/Down에서 fetchMore + scroll**
-
-```tsx
+#### ArrowUp/Down에서 fetchMore + scroll```tsx
 case 'ArrowUp':
 case 'ArrowDown': {
   e.preventDefault();
