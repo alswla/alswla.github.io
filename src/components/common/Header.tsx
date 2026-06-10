@@ -1,6 +1,6 @@
 import { Link } from "gatsby"
 import styled from "styled-components"
-import { AiFillGithub, AiFillLinkedin } from "react-icons/ai"
+import { AiFillGithub } from "react-icons/ai"
 
 const Wrapper = styled.header`
   position: sticky;
@@ -69,9 +69,6 @@ export default function Header() {
         <Actions>
           <a href="https://github.com/alswla" target="_blank" rel="noreferrer">
             <AiFillGithub />
-          </a>
-          <a href="#" target="_blank" rel="noreferrer">
-            <AiFillLinkedin />
           </a>
         </Actions>
       </Inner>
