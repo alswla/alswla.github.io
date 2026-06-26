@@ -88,7 +88,7 @@ _“컴포넌트 분리와 props를 활용했다는 것만으로 유지보수성
 
 ### 컴포넌트의 분리와 단일책임원칙(SRP)
 
-[SOLID원칙](https://ko.wikipedia.org/wiki/SOLID_(%EA%B0%9D%EC%B2%B4_%EC%A7%80%ED%96%A5_%EC%84%A4%EA%B3%84))의 단일책임원칙(Single Responsibility Principle)에 따라 리액트의 컴포넌트에서도 역시 **_하나의 컴포넌트가 하나의 책임만을 담당_**하는 것이 좋다고 말합니다.
+[SOLID원칙](<https://ko.wikipedia.org/wiki/SOLID_(%EA%B0%9D%EC%B2%B4_%EC%A7%80%ED%96%A5_%EC%84%A4%EA%B3%84)>)의 단일책임원칙(Single Responsibility Principle)에 따라 리액트의 컴포넌트에서도 역시 **_하나의 컴포넌트가 하나의 책임만을 담당_**하는 것이 좋다고 말합니다.
 
 그렇다면 책임이란 무엇일까요? 간단히 말하면 **책임은 어떤 “컴포넌트가 수행하는 동작이자 변경의 이유”라고 볼 수 있습니다.** 이때 리액트에서의 책임의 의미는 컴포넌트가 수행하는 동작에 보다 가깝습니다.
 
@@ -150,7 +150,12 @@ const CardItem = ({
   ...
   return (
     <div className={className}>
-      {imageUrl && <img src={imageUrl} style={rounded ? { borderRadius: '50%' } : undefined}/>}
+      {imageUrl && (
+        <img
+          src={imageUrl}
+          style={rounded ? { borderRadius: "50%" } : undefined}
+        />
+      )}
       <div>
         <span>{tagNumber}</span>
         <span>{name}</span>
@@ -158,7 +163,7 @@ const CardItem = ({
       {description && <div>...</div>}
       ...
     </div>
-  );
+  )
 }
 ```
 
@@ -305,14 +310,14 @@ const ScreenDimensions = () => {
  * playtime: 재생 중인 곡의 전체 재생시간.
  */
 interface SongState {
-  playingSong: Song | null;
-  playingSongLyrics: Lyrics | null;
-  seek: number;
-  playtime: number;
+  playingSong: Song | null
+  playingSongLyrics: Lyrics | null
+  seek: number
+  playtime: number
 }
 
 setPlayingSong(song) {
-  state.songs = song;
+  state.songs = song
 }
 ...
 
@@ -323,17 +328,17 @@ setPlayingSong(song) {
  * repeatType: 반복 설정 상태.
  */
 interface SongListState {
-  songs: number[];
-  playingSongIndex: number;
-  repeatType: RepeatType;
+  songs: number[]
+  playingSongIndex: number
+  repeatType: RepeatType
 }
 
 setSongs(songs) {
-  state.songs = songs;
+  state.songs = songs
 }
 
 setPlayingSongIndex(index) {
-  state.playingSongIndex = index;
+  state.playingSongIndex = index
 }
 ...
 ```
@@ -347,16 +352,16 @@ setPlayingSongIndex(index) {
 
 ```tsx
 // 컴포넌트에서 재생목록 갱신 코드
-const songs = [...];
+const songs = [...]
 
-dispatch(setSongs(songs));  // (1)
+dispatch(setSongs(songs)) // (1)
 
 if (songs.length) {
-  const songId = songs[0]; // (2)
-  const { data } = await getSongDetailInfo(songId);
+  const songId = songs[0] // (2)
+  const { data } = await getSongDetailInfo(songId)
 
-  dispatch(setPlayingSong(data)); //(3)
-  dispatch(setPlayingSongIndex(0));
+  dispatch(setPlayingSong(data)) // (3)
+  dispatch(setPlayingSongIndex(0))
 }
 ```
 
@@ -381,22 +386,22 @@ if (songs.length) {
  * repeatType: 반복 설정 상태.
  */
 interface SongState {
-  songs: number[];
-  playingSongIndex: number;
-  repeatType: RepeatType;
-  playingSong: Song | null;
-  playingSongLyrics: Lyrics | null;
-  seek: number;
-  playtime: number;
+  songs: number[]
+  playingSongIndex: number
+  repeatType: RepeatType
+  playingSong: Song | null
+  playingSongLyrics: Lyrics | null
+  seek: number
+  playtime: number
 }
 
 // 컴포넌트에서 목록 갱신 코드
-const songs = [...];
+const songs = [...]
 
-dispatch(setSongs(songs));
+dispatch(setSongs(songs))
 
 if (songs.length) {
-  dispatch(setPlayingSongIndex(0));
+  dispatch(setPlayingSongIndex(0))
 }
 ```
 
